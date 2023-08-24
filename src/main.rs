@@ -1,16 +1,6 @@
-mod window;
-mod graphics;
-use window::*;
-use graphics::*;
-
+use winit::event_loop::EventLoop;
 
 fn main() {
-    println!("Hello, xenotech!");
-
-    let window = Window::open();
-    let graphics = Graphics::init();
-
-    loop {
-        window.poll();
-    }
+    unsafe { xenotech::EVENT_LOOP = Some(xenotech::EventLoop(EventLoop::new())) };
+    xenotech::main();
 }

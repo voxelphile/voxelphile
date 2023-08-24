@@ -1,8 +1,11 @@
-#[cfg(feature = "vk")]
-mod vulkan;
-#[cfg(feature = "vk")]
-pub type Graphics = vulkan::Vulkan;
+use winit::window::Window;
+
+#[cfg(feature = "boson")]
+mod boson;
+#[cfg(feature = "boson")]
+pub type Graphics = boson::Boson;
 
 pub trait GraphicsInterface {
-    fn init() -> Self;
+    fn init(window: &Window) -> Self;
+    fn render(&mut self);
 }
