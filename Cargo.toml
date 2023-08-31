@@ -9,7 +9,13 @@ edition = "2021"
 default = ["boson"]
 boson = ["dep:boson"]
 
+[build-dependencies]
+shaderc = "*"
+
 [dependencies]
 boson = { path = "../boson", optional = true }
 winit = "*"
 raw-window-handle = "*"
+nalgebra = "*"
+strum = "*"
+strum_macros = "*"
