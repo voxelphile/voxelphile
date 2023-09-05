@@ -296,6 +296,8 @@ impl super::GraphicsInterface for Boson {
                 ]),
                 raster: Raster {
                     face_cull: FaceCull::BACK,
+                    polygon_mode: PolygonMode::Line,
+                    front_face: FrontFace::Clockwise,
                     ..Default::default()
                 },
                 ..Default::default()
@@ -323,7 +325,7 @@ impl super::GraphicsInterface for Boson {
         let block_vertices = Pool::new(
             device.clone(),
             BufferUsage::TRANSFER_DST | BufferUsage::STORAGE,
-            3000,
+            3600,
         );
         let block_indices = Pool::new(
             device.clone(),
@@ -415,7 +417,7 @@ impl super::GraphicsInterface for Boson {
     fn create_block_mesh(&mut self, info: super::BlockMesh<'_>) -> super::Mesh {
         let vertices = self.block_vertices.section(info.vertices);
         let mut modified_indices = vec![];
-        for cursor in (0..info.indices.len()) {
+        for cursor in 0..info.indices.len() {
             let index = info.indices[cursor];
 
             let relavent_bucket =

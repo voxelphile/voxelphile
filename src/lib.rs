@@ -9,7 +9,7 @@ use winit::{
     platform::run_return::EventLoopExtRunReturn,
     window::{CursorGrabMode, WindowBuilder},
 };
-use world::structure::{gen_block_mesh, gen_chunk};
+use world::{structure::{gen_block_mesh, gen_chunk}, World};
 
 pub struct EventLoop(pub winit::event_loop::EventLoop<()>);
 
@@ -54,20 +54,15 @@ pub fn main() {
 
     let mut graphics = Graphics::init(&window);
 
-    let chunk = gen_chunk();
-    let (block_vertices, block_indices) = gen_block_mesh(&chunk);
-
-    let mesh = graphics.create_block_mesh(BlockMesh {
-        vertices: &block_vertices,
-        indices: &block_indices,
-        position: SVector::<f32, 3>::new(0.0, 0.0, 0.0),
-    });
+    let mut world = World::new(4);
 
     let mut cursor_captured = false;
     let mut cursor_movement = SVector::<f32, 2>::new(0.0, 0.0);
     let mut direction = SVector::<f32, 3>::new(0.0, 0.0, 0.0);
     let mut look = SVector::<f32, 2>::new(0.0, 0.0);
     let mut translation = SVector::<f32, 3>::new(0.0, 0.0, 0.0);
+
+    world.load(&mut graphics, translation);
 
     let start_time = time::Instant::now();
     let mut last_delta_time = start_time;
@@ -184,7 +179,7 @@ pub fn main() {
 
                 cursor_movement = Default::default();
 
-                translation += delta_time
+                translation += 30.0 * delta_time
                     * (UnitQuaternion::from_axis_angle(
                         &Unit::new_normalize(SVector::<f32, 3>::new(0.0, 0.0, 1.0)),
                         look.x,

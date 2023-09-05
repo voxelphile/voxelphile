@@ -58,7 +58,7 @@ void main() {
 
     unpack(vertex.data, position, uv, color);
 
-    position = vec4(indirect[gl_DrawID].position.xyz, 0) + position;
+    position = vec4(indirect[gl_DrawID].position.xyz + position.xyz, 1);
 
 	gl_Position = camera.proj * camera.view * position;
 }

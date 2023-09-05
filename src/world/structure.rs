@@ -179,7 +179,7 @@ fn calc_block_visible_mask_inside_structure<S: Structure>(s: &S, i: usize) -> u8
 pub fn gen_chunk() -> Chunk {
     let mut chunk = Chunk {
         data: [BlockInfo {
-            block: Block::Empty,
+            block: Block::Full,
             visible_mask: 0,
         }; CHUNK_SIZE],
     };
@@ -218,6 +218,7 @@ pub fn cubic_block(
     ];
     
     for (i, dir) in NeighborDirection::iter().enumerate() {
+        
         if (info.visible_mask >> dir as u8) & 1 != 0 {
             let block_vertex_count = block_vertices.len() as u32;
             block_vertices.extend([
@@ -260,12 +261,14 @@ pub fn gen_block_mesh<S: Structure>(s: &S) -> (Vec<BlockVertex>, Vec<u32>) {
     let mut block_indices = vec![];
 
     s.for_each(|i, info| {
-        cubic_block(
-            info,
-            s.delinearize(i),
-            &mut block_vertices,
-            &mut block_indices,
-        );
+        if info.block.is_opaque() {
+            cubic_block(
+                info,
+                s.delinearize(i),
+                &mut block_vertices,
+                &mut block_indices,
+            );
+        }
     });
     (block_vertices, block_indices)
 }
