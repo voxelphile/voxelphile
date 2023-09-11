@@ -9,7 +9,10 @@ use winit::{
     platform::run_return::EventLoopExtRunReturn,
     window::{CursorGrabMode, WindowBuilder},
 };
-use world::{structure::{gen_block_mesh, gen_chunk}, World};
+use world::{
+    structure::{gen_block_mesh, gen_chunk, CHUNK_AXIS},
+    World,
+};
 
 pub struct EventLoop(pub winit::event_loop::EventLoop<()>);
 
@@ -54,15 +57,15 @@ pub fn main() {
 
     let mut graphics = Graphics::init(&window);
 
-    let mut world = World::new(4);
+    let mut world = World::new(48);
 
     let mut cursor_captured = false;
     let mut cursor_movement = SVector::<f32, 2>::new(0.0, 0.0);
     let mut direction = SVector::<f32, 3>::new(0.0, 0.0, 0.0);
     let mut look = SVector::<f32, 2>::new(0.0, 0.0);
     let mut translation = SVector::<f32, 3>::new(0.0, 0.0, 0.0);
-
-    world.load(&mut graphics, translation);
+    let mut chunk_translation = SVector::<isize, 3>::new(0, 0, 0);
+    let mut last_chunk_translation = SVector::<isize, 3>::new(isize::MAX, 0, 0);
 
     let start_time = time::Instant::now();
     let mut last_delta_time = start_time;
@@ -179,13 +182,23 @@ pub fn main() {
 
                 cursor_movement = Default::default();
 
-                translation += 30.0 * delta_time
+                translation += 30.0
+                    * delta_time
                     * (UnitQuaternion::from_axis_angle(
                         &Unit::new_normalize(SVector::<f32, 3>::new(0.0, 0.0, 1.0)),
                         look.x,
                     )
                     .to_rotation_matrix()
                         * direction);
+
+                chunk_translation = nalgebra::try_convert::<_, SVector<isize, 3>>(translation)
+                    .unwrap()
+                    / CHUNK_AXIS as isize;
+
+                if chunk_translation != last_chunk_translation {
+                    world.load(&mut graphics, translation);
+                    last_chunk_translation = chunk_translation;
+                }
 
                 graphics.render(look, translation);
             }

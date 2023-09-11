@@ -6,9 +6,9 @@ use std::{f32::consts::PI, mem};
 
 use self::{
     buffer::indirect::IndirectBuffer,
-    buffer::{indirect::indirect_buffer_upload, staging::StagingBuffer},
+    buffer::{indirect::indirect_buffer_task, staging::StagingBuffer},
     indirect::IndirectData,
-    pool::{index_pool_upload, vertex_pool_upload, Pool},
+    pool::{index_pool_task, vertex_pool_task, Pool},
 };
 use boson::{
     commands::RenderPassBeginInfo,
@@ -42,6 +42,7 @@ pub struct Boson {
     opaque_indirect: IndirectBuffer<IndirectData>,
     width: u32,
     height: u32,
+    depth: Image,
 }
 
 impl Boson {
@@ -59,20 +60,17 @@ impl Boson {
             })
             .expect("failed to create render graph builder");
 
-        self.block_vertices
-            .growable_buffer
-            .task(&mut render_graph_builder);
-        self.block_indices
-            .growable_buffer
-            .task(&mut render_graph_builder);
-        self.opaque_indirect
-            .growable_buffer
-            .task(&mut render_graph_builder);
-
+        vertex_pool_task(&mut render_graph_builder, self);
+        index_pool_task(&mut render_graph_builder, self);
+        indirect_buffer_task(&mut render_graph_builder, self);
         self.staging.task(&mut render_graph_builder);
 
         render_graph_builder.add(Task {
             resources: vec![
+                Resource::Buffer(
+                    Box::new(move |boson| boson.opaque_indirect.buffer()),
+                    BufferAccess::ShaderReadOnly,
+                ),
                 Resource::Image(
                     Box::new(|boson| {
                         boson
@@ -86,9 +84,10 @@ impl Boson {
                     ImageAccess::ColorAttachment,
                     Default::default(),
                 ),
-                Resource::Buffer(
-                    Box::new(move |boson| boson.opaque_indirect.buffer()),
-                    BufferAccess::ShaderReadOnly,
+                Resource::Image(
+                    Box::new(|boson| boson.depth),
+                    ImageAccess::DepthStencilAttachment,
+                    Default::default(),
                 ),
             ],
             task: move |boson, commands| {
@@ -140,7 +139,7 @@ impl Boson {
                 commands.set_pipeline(&boson.uber_pipeline)?;
 
                 commands.draw_indirect(DrawIndirect {
-                    buffer: 1,
+                    buffer: 0,
                     offset: 0,
                     draw_count: boson.opaque_indirect.count(),
                     stride: mem::size_of::<IndirectData>(),
@@ -200,8 +199,6 @@ impl Boson {
             })
             .expect("failed to create swapchain");
 
-        let render_graph = self.record(device.clone(), swapchain, self.width, self.height);
-
         let framebuffers = device
             .get_swapchain_images(swapchain)
             .unwrap()
@@ -209,7 +206,7 @@ impl Boson {
             .map(|image| {
                 device
                     .create_framebuffer(FramebufferInfo {
-                        attachments: vec![image],
+                        attachments: vec![image, self.depth],
                         width: self.width,
                         height: self.height,
                         render_pass: render_pass.clone(),
@@ -218,12 +215,19 @@ impl Boson {
             })
             .collect::<Vec<_>>();
 
+        let render_graph = self.record(device.clone(), swapchain, self.width, self.height);
+
         (swapchain, render_graph, framebuffers)
     }
 }
 
 impl super::GraphicsInterface for Boson {
     fn resize(&mut self, width: u32, height: u32) {
+        if self.width == width && self.height == height {
+            return;
+        }
+        self.device.wait_idle();
+
         self.width = width;
         self.height = height;
 
@@ -252,16 +256,31 @@ impl super::GraphicsInterface for Boson {
             })
             .expect("failed to create device");
 
+        let depth = device
+            .create_image(ImageInfo {
+                extent: ImageExtent::TwoDim(4096, 4096),
+                usage: ImageUsage::DEPTH_STENCIL,
+                format: Format::D32Sfloat,
+                debug_name: "depth",
+            })
+            .unwrap();
+
         let render_pass = device
             .create_render_pass(RenderPassInfo {
                 color: vec![RenderPassAttachment {
                     image: 0,
                     load_op: LoadOp::Clear,
-                    format: Format::Bgra8Srgb,
+                    format: Format::Bgra8Unorm,
                     initial_layout: ImageLayout::ColorAttachmentOptimal,
                     final_layout: ImageLayout::ColorAttachmentOptimal,
                 }],
-                depth: None,
+                depth: Some(RenderPassAttachment {
+                    image: 1,
+                    load_op: LoadOp::Clear,
+                    format: Format::D32Sfloat,
+                    initial_layout: ImageLayout::DepthStencilAttachmentOptimal,
+                    final_layout: ImageLayout::DepthStencilAttachmentOptimal,
+                }),
                 stencil_load_op: LoadOp::DontCare,
             })
             .unwrap();
@@ -286,7 +305,12 @@ impl super::GraphicsInterface for Boson {
                     format: Format::Bgra8Srgb,
                     ..Default::default()
                 }],
-                depth: None,
+                depth: Some(Depth {
+                    write: true,
+                    compare: CompareOp::LessOrEqual,
+                    format: Format::D32Sfloat,
+                    ..Default::default()
+                }),
                 render_pass: Some(render_pass.clone()),
                 binding: BindingState::Binding(vec![
                     Binding::Buffer,
@@ -296,8 +320,6 @@ impl super::GraphicsInterface for Boson {
                 ]),
                 raster: Raster {
                     face_cull: FaceCull::BACK,
-                    polygon_mode: PolygonMode::Line,
-                    front_face: FrontFace::Clockwise,
                     ..Default::default()
                 },
                 ..Default::default()
@@ -316,20 +338,20 @@ impl super::GraphicsInterface for Boson {
         let global_buffer = device
             .create_buffer(BufferInfo {
                 size: 4096,
-                memory: Memory::empty(),
                 usage: BufferUsage::TRANSFER_DST | BufferUsage::STORAGE,
                 debug_name: "global",
+                ..Default::default()
             })
             .unwrap();
 
         let block_vertices = Pool::new(
             device.clone(),
-            BufferUsage::TRANSFER_DST | BufferUsage::STORAGE,
-            3600,
+            BufferUsage::TRANSFER_DST | BufferUsage::TRANSFER_SRC | BufferUsage::STORAGE,
+            600,
         );
         let block_indices = Pool::new(
             device.clone(),
-            BufferUsage::TRANSFER_DST | BufferUsage::STORAGE,
+            BufferUsage::TRANSFER_DST | BufferUsage::TRANSFER_SRC | BufferUsage::STORAGE,
             3000,
         );
         let staging = StagingBuffer::new(device.clone());
@@ -354,6 +376,7 @@ impl super::GraphicsInterface for Boson {
             opaque_indirect,
             width,
             height,
+            depth,
         };
 
         {
@@ -368,10 +391,6 @@ impl super::GraphicsInterface for Boson {
     }
 
     fn render(&mut self, look: SVector<f32, 2>, translation: SVector<f32, 3>) {
-        vertex_pool_upload(self);
-        index_pool_upload(self);
-        indirect_buffer_upload(self);
-
         let clip = SMatrix::<f32, 4, 4>::new(
             1.0, 0.0, 0.0, 0.0, 0.0, -1.0, 0.0, 0.0, 0.0, 0.0, 0.5, 0.5, 0.0, 0.0, 0.0, 1.0,
         );
@@ -385,7 +404,7 @@ impl super::GraphicsInterface for Boson {
                         self.width as f32 / self.height as f32,
                         PI / 2.0,
                         0.1,
-                        100.0,
+                        1000.0,
                     )
                     .into_inner(),
                 view: (SMatrix::<f32, 4, 4>::new_translation(&translation)
@@ -419,12 +438,11 @@ impl super::GraphicsInterface for Boson {
         let mut modified_indices = vec![];
         for cursor in 0..info.indices.len() {
             let index = info.indices[cursor];
-
             let relavent_bucket =
                 vertices[index as usize / self.block_vertices.max_count_per_bucket()];
-
             let base_for_this_index =
                 relavent_bucket.0 * self.block_vertices.max_count_per_bucket();
+
             modified_indices.push(
                 base_for_this_index as u32
                     + index % self.block_vertices.max_count_per_bucket() as u32,
@@ -435,7 +453,6 @@ impl super::GraphicsInterface for Boson {
         let mut indirect = vec![];
         for bucket in &indices {
             let cmd = self.block_indices.cmd(*bucket);
-
             indirect.push(indirect_buffer.add(IndirectData {
                 cmd,
                 position: SVector::<f32, 4>::new(

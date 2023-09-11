@@ -84,7 +84,14 @@ impl<T: Clone + Copy> Pool<T> {
     }
 }
 
-pub(crate) fn vertex_pool_upload(boson: &mut Boson) {
+pub(crate) fn vertex_pool_task(
+    render_graph_builder: &mut RenderGraphBuilder<Boson>,
+    boson: &mut Boson,
+) {
+    boson
+        .block_vertices
+        .growable_buffer
+        .task(render_graph_builder);
     let buffer = boson.block_vertices.growable_buffer.buffer();
     let Some(buffer) = buffer else {
         return;
@@ -94,7 +101,14 @@ pub(crate) fn vertex_pool_upload(boson: &mut Boson) {
     }
     boson.block_vertices.uploads.clear();
 }
-pub(crate) fn index_pool_upload(boson: &mut Boson) {
+pub(crate) fn index_pool_task(
+    render_graph_builder: &mut RenderGraphBuilder<Boson>,
+    boson: &mut Boson,
+) {
+    boson
+        .block_indices
+        .growable_buffer
+        .task(render_graph_builder);
     let buffer = boson.block_indices.growable_buffer.buffer();
     let Some(buffer) = buffer else {
         return;

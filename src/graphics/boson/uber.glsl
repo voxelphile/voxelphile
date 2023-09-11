@@ -35,6 +35,7 @@ layout(binding = 3) buffer GlobalBuffer {
 
 #if shader_type == shader_type_vertex
 
+layout(location = 3) out flat uint idx;
 layout(location = 0) out vec4 position;
 layout(location = 1) out vec2 uv;
 layout(location = 2) out vec4 color;

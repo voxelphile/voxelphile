@@ -1,6 +1,7 @@
 use nalgebra::SVector;
 
 #[derive(Clone, Copy, Debug, Default)]
+#[repr(C)]
 pub struct BlockVertex {
     pub data: SVector<u32, 4>,
 }

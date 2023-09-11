@@ -63,11 +63,34 @@ pub mod growable {
             let size = size.next_power_of_two();
             let mut guard = self.0.lock().unwrap();
             if size > guard.buffer.size {
-                if guard.old.is_none() {
+                if guard.old.is_none() && guard.buffer.buffer.is_some() {
                     guard.old = Some(guard.buffer.clone());
                     guard.buffer.buffer = None;
+                } else if let Some(internal) = guard.old.take() {
+                    guard.device.wait_idle();
+                    guard
+                        .device
+                        .destroy_buffer(internal.buffer.unwrap())
+                        .unwrap();
+                    if guard.buffer.buffer.is_some() {
+                        guard.old = Some(guard.buffer.clone());
+                        guard.buffer.buffer = None;
+                    }
                 }
                 guard.buffer.size = guard.buffer.size.max(size);
+            }
+            if guard.buffer.buffer.is_none() {
+                dbg!(guard.buffer.size);
+                guard.buffer.buffer = Some(
+                    guard
+                        .device
+                        .create_buffer(BufferInfo {
+                            size: guard.buffer.size,
+                            usage: BufferUsage::STORAGE | BufferUsage::TRANSFER_DST,
+                            ..Default::default()
+                        })
+                        .unwrap(),
+                );
             }
         }
 
@@ -83,27 +106,6 @@ pub mod growable {
             render_graph_builder.add(Task {
                 resources: vec![
                     Resource::Buffer(
-                        Box::new(move |boson| {
-                            let mut guard = inner_a.lock().unwrap();
-
-                            if guard.buffer.buffer.is_none() {
-                                guard.buffer.buffer = Some(
-                                    boson
-                                        .device
-                                        .create_buffer(BufferInfo {
-                                            size: guard.buffer.size,
-                                            usage: BufferUsage::STORAGE | BufferUsage::TRANSFER_DST,
-                                            ..Default::default()
-                                        })
-                                        .unwrap(),
-                                );
-                            }
-
-                            guard.buffer.buffer.unwrap()
-                        }),
-                        BufferAccess::TransferWrite,
-                    ),
-                    Resource::Buffer(
                         Box::new(move |frame| {
                             let guard = inner_b.lock().unwrap();
 
@@ -114,6 +116,14 @@ pub mod growable {
                             }
                         }),
                         BufferAccess::TransferRead,
+                    ),
+                    Resource::Buffer(
+                        Box::new(move |boson| {
+                            let mut guard = inner_a.lock().unwrap();
+
+                            guard.buffer.buffer.unwrap()
+                        }),
+                        BufferAccess::TransferWrite,
                     ),
                 ],
                 task: move |boson, commands| {
@@ -135,15 +145,14 @@ pub mod growable {
 
                     if guard.old.is_some() {
                         guard.counter += 1;
-                        if guard.counter > 6 {
+                        if guard.counter > 50 {
                             let internal = guard.old.take();
 
                             boson
                                 .device
                                 .destroy_buffer(internal.map(|x| x.buffer).flatten().unwrap())?;
+                            guard.counter = 0;
                         }
-                    } else {
-                        guard.counter = 0;
                     }
 
                     Ok(())
@@ -191,7 +200,7 @@ pub mod staging {
 
     impl StagingBuffer {
         pub fn new(device: Device) -> Self {
-            let size = (1e+9) as usize / 4;
+            let size = (1e+9) as usize;
             let buffer = device
                 .create_buffer(BufferInfo {
                     size,
@@ -441,7 +450,10 @@ pub mod indirect {
         task::RenderGraphBuilder,
     };
 
-    use crate::graphics::{boson::Boson, Indirect};
+    use crate::graphics::{
+        boson::{indirect::IndirectData, Boson},
+        Indirect,
+    };
 
     use super::growable::GrowableBuffer;
 
@@ -450,9 +462,9 @@ pub mod indirect {
     pub struct IndirectBuffer<T: IndirectProvider> {
         pub growable_buffer: GrowableBuffer,
         data: Vec<T>,
-        data_for_gpu: Vec<T>,
         mapping: HashMap<Indirect, usize>,
         rev_mapping: HashMap<usize, Indirect>,
+        uploads: Vec<(usize, T)>,
         counter: Box<dyn Iterator<Item = Indirect> + 'static + Send + Sync>,
         dirty: bool,
     }
@@ -465,7 +477,7 @@ pub mod indirect {
                     BufferUsage::TRANSFER_DST | BufferUsage::INDIRECT | BufferUsage::STORAGE,
                 ),
                 data: vec![],
-                data_for_gpu: vec![],
+                uploads: vec![],
                 mapping: HashMap::new(),
                 rev_mapping: HashMap::new(),
                 counter: Box::new((0..).into_iter().map(|x| Indirect(x))),
@@ -477,10 +489,11 @@ pub mod indirect {
 
             self.growable_buffer
                 .grow_to_atleast((indirect.0 + 1) * mem::size_of::<T>());
-            self.mapping.insert(indirect, self.data.len());
-            self.rev_mapping.insert(self.data.len(), indirect);
+            let idx = self.data.len();
+            self.mapping.insert(indirect, idx);
+            self.rev_mapping.insert(idx, indirect);
+            self.upload(idx, data.clone());
             self.data.push(data);
-            self.dirty = true;
             indirect
         }
         pub fn remove(&mut self, indirect: Indirect) {
@@ -489,7 +502,13 @@ pub mod indirect {
             self.rev_mapping.insert(idx, indirect);
             self.mapping.insert(indirect, idx);
             self.data.swap_remove(idx);
+            if let Some(data) = self.data.get(idx) {
+                self.upload(idx, data.clone());
+            }
+        }
+        fn upload(&mut self, idx: usize, upload: T) {
             self.dirty = true;
+            self.uploads.push((idx, upload));
         }
         pub(crate) fn count(&self) -> usize {
             self.data.len()
@@ -500,19 +519,31 @@ pub mod indirect {
         pub(crate) fn size(&self) -> usize {
             self.growable_buffer.size()
         }
+
+        pub(crate) fn get(&mut self, indirect: Indirect) -> T {
+            self.data[self.mapping[&indirect]].clone()
+        }
+        pub(crate) fn set(&mut self, indirect: Indirect, data: T) {
+            self.upload(self.mapping[&indirect], data);
+            self.data[self.mapping[&indirect]] = data;
+        }
     }
 
-    pub(crate) fn indirect_buffer_upload(boson: &mut Boson) {
+    pub(crate) fn indirect_buffer_task(
+        render_graph_builder: &mut RenderGraphBuilder<Boson>,
+        boson: &mut Boson,
+    ) {
         let mut uploads = vec![];
+        let indirect_buffer = &mut boson.opaque_indirect;
+        indirect_buffer.growable_buffer.task(render_graph_builder);
 
-        if boson.opaque_indirect.dirty {
-            let data = boson.opaque_indirect.data.clone();
-            let Some(buffer) = boson.opaque_indirect.growable_buffer.buffer() else {
+        for (idx, data) in &indirect_buffer.uploads {
+            let Some(buffer) = indirect_buffer.growable_buffer.buffer() else {
                 return;
             };
-            boson.opaque_indirect.dirty = false;
-            uploads.push((buffer, 0, data));
+            uploads.push((buffer, idx * mem::size_of::<IndirectData>(), [data.clone()]));
         }
+        indirect_buffer.uploads.clear();
         for (buffer, offset, data) in uploads {
             boson.staging.upload_buffer(buffer, offset, &data)
         }
