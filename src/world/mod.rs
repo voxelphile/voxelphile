@@ -3,6 +3,7 @@ pub mod structure;
 use crate::graphics::{BlockMesh, Graphics, GraphicsInterface, Mesh};
 use crossbeam::channel::{self, Receiver, Sender};
 use nalgebra::SVector;
+use std::collections::VecDeque;
 use std::thread;
 use std::{
     collections::{HashMap, HashSet},
@@ -14,7 +15,7 @@ use structure::Chunk;
 
 use self::structure::{
     calc_block_visible_mask_between_chunks, gen_block_mesh, gen_chunk, neighbors, BlockInfo,
-    Structure, CHUNK_AXIS,
+    Structure, CHUNK_AXIS, CHUNK_SIZE,
 };
 
 pub enum ChunkState {
@@ -30,9 +31,10 @@ pub struct World {
     post_generator: (Sender<GenResp>, Receiver<GenResp>),
     _generators: Vec<JoinHandle<()>>,
     view_distance: usize,
-    chunk_translation: SVector<isize, 3>,
-    last_chunk_translation: SVector<isize, 3>,
-    load_chunk_order: Vec<SVector<isize, 3>>,
+    last_translation: SVector<f32, 3>,
+    load_chunk_order: VecDeque<SVector<isize, 3>>,
+    recalculate_needed_chunks: bool,
+    chunk_needed_iter: Box<dyn Iterator<Item = usize>>,
 }
 
 impl World {
@@ -49,8 +51,6 @@ impl World {
                 })
             })
             .collect::<Vec<_>>();
-        let chunk_translation = SVector::<isize, 3>::new(0, 0, 0);
-        let last_chunk_translation = SVector::<isize, 3>::new(isize::MAX, 0, 0);
 
         Self {
             view_distance,
@@ -59,55 +59,72 @@ impl World {
             _generators,
             chunks: Default::default(),
             loaded: Default::default(),
-            chunk_translation,
-            last_chunk_translation,
-            load_chunk_order: vec![],
+            last_translation: Default::default(),
+            load_chunk_order: VecDeque::new(),
+            recalculate_needed_chunks: false,
+            chunk_needed_iter: Box::new(0..0),
         }
     }
 
     pub fn load(&mut self, graphics: &mut Graphics, translation_f: SVector<f32, 3>) {
         let translation = nalgebra::try_convert::<_, SVector<isize, 3>>(translation_f).unwrap();
 
-        let view_distance = self.view_distance as isize;
+        let chunk_translation = translation / CHUNK_AXIS as isize;
 
-        self.chunk_translation = translation / CHUNK_AXIS as isize;
-
-        if self.chunk_translation != self.last_chunk_translation {
-            self.last_chunk_translation = self.chunk_translation;
-            let mut needed_chunks = HashSet::default();
-            for x in -view_distance..=view_distance {
-                for y in -view_distance..=view_distance {
-                    for z in -view_distance / 2..=view_distance / 2 {
-                        let position = SVector::<isize, 3>::new(x, y, z);
-                        needed_chunks.insert(translation / CHUNK_AXIS as isize + position);
-                    }
-                }
-            }
-
-            self.load_chunk_order = needed_chunks
-                .difference(&self.loaded)
-                .cloned()
-                .collect::<Vec<_>>();
-
-            self.load_chunk_order.sort_by(|a, b| {
-                let a_f = nalgebra::convert::<_, SVector<f32, 3>>(*a);
-                let b_f = nalgebra::convert::<_, SVector<f32, 3>>(*b);
-                a_f.metric_distance(&translation_f)
-                    .partial_cmp(&b_f.metric_distance(&translation_f))
-                    .unwrap()
-            });
+        if self.last_translation.metric_distance(&translation_f) >= self.view_distance as f32 / 4.0 
+        {
+            self.last_translation = translation_f;
+            let side_length = 2 * self.view_distance + 1;
+            let total_chunks = side_length * side_length * side_length;
+            self.chunk_needed_iter = Box::new(0..total_chunks);
+            self.load_chunk_order = VecDeque::with_capacity(total_chunks);
+            self.recalculate_needed_chunks = true;
         }
 
-        for position in self
-            .load_chunk_order
-            .drain(..10)
-        {
-            let (pre_generator_tx, _) = &self.pre_generator;
+        if self.recalculate_needed_chunks {
+            let mut a = 0;
+            loop {
+                let Some(i) = self.chunk_needed_iter.next() else {
+                self.recalculate_needed_chunks = false;
+                break;
+            };
+                let mut b = 0;
+                let mut pos = SVector::<isize, 3>::new(0, 0, 0);
+                'a: for j in 0..self.view_distance as isize {
+                    for x in -j..=j {
+                        for y in -j..=j {
+                            for z in -j..=j {
+                                if x.abs() != j && y.abs() != j && z.abs() != j {
+                                    continue;
+                                }
+                                if i == b {
+                                    pos = SVector::<isize, 3>::new(x, y, z);
+                                    break 'a;
+                                }
+                                b += 1;
+                            }
+                        }
+                    }
+                }
+                self.load_chunk_order
+                    .push_back(pos + chunk_translation);
+                dbg!(i);
+                a += 1;
+                if a >= 10 {
+                    break;
+                }
+            }
+        }
 
-            let _ = pre_generator_tx.send(GenReq { position });
+        for position in self.load_chunk_order.drain(..) {
+            if !self.loaded.contains(&position) {
+                let (pre_generator_tx, _) = &self.pre_generator;
 
-            self.chunks.insert(position, ChunkState::Generating);
-            self.loaded.insert(position);
+                let _ = pre_generator_tx.send(GenReq { position });
+
+                self.chunks.insert(position, ChunkState::Generating);
+                self.loaded.insert(position);
+            }
         }
 
         {
@@ -117,8 +134,7 @@ impl World {
                 mut chunk,
             }) = post_generator_rx.try_recv()
             {
-            dbg!(position);
-            let mut neighbors_present = 0;
+                let mut neighbors_present = 0;
                 neighbors(position, |neighbor, dir, dimension, normal| {
                     let mut neighbor = match self.chunks.get_mut(&neighbor) {
                         Some(ChunkState::Stasis { chunk, neighbors }) => {

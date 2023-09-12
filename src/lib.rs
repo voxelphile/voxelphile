@@ -64,8 +64,6 @@ pub fn main() {
     let mut direction = SVector::<f32, 3>::new(0.0, 0.0, 0.0);
     let mut look = SVector::<f32, 2>::new(0.0, 0.0);
     let mut translation = SVector::<f32, 3>::new(0.0, 0.0, 0.0);
-    let mut chunk_translation = SVector::<isize, 3>::new(0, 0, 0);
-    let mut last_chunk_translation = SVector::<isize, 3>::new(isize::MAX, 0, 0);
 
     let start_time = time::Instant::now();
     let mut last_delta_time = start_time;
@@ -191,14 +189,7 @@ pub fn main() {
                     .to_rotation_matrix()
                         * direction);
 
-                chunk_translation = nalgebra::try_convert::<_, SVector<isize, 3>>(translation)
-                    .unwrap()
-                    / CHUNK_AXIS as isize;
-
-                if chunk_translation != last_chunk_translation {
-                    world.load(&mut graphics, translation);
-                    last_chunk_translation = chunk_translation;
-                }
+                world.load(&mut graphics, translation);
 
                 graphics.render(look, translation);
             }

@@ -3,9 +3,9 @@ use nalgebra::{SMatrix, SVector};
 use vertex::*;
 use winit::window::Window;
 
-#[cfg(feature = "boson")]
+//#[cfg(feature = "boson")]
 mod boson;
-#[cfg(feature = "boson")]
+//#[cfg(feature = "boson")]
 pub type Graphics = boson::Boson;
 
 pub trait GraphicsInterface {
