@@ -106,9 +106,11 @@ impl World {
                         }
                     }
                 }
-                self.load_chunk_order
-                    .push_back(pos + chunk_translation);
-                dbg!(i);
+                let pos = pos + chunk_translation;
+                if !self.loaded.contains(&pos) {
+                    self.load_chunk_order
+                    .push_back(pos);
+                }
                 a += 1;
                 if a >= 10 {
                     break;
