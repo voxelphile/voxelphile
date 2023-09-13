@@ -40,4 +40,5 @@ pub struct Mesh {
 pub struct Camera {
     proj: SMatrix<f32, 4, 4>,
     view: SMatrix<f32, 4, 4>,
+    trans: SMatrix<f32, 4, 4>,
 }

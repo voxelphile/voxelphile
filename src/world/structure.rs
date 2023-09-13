@@ -11,7 +11,7 @@ use crate::graphics::{vertex::BlockVertex, BlockMesh};
 #[repr(u16)]
 pub enum Block {
     Air,
-    SmoothStone,
+    Stone,
     Wood,
 }
 
@@ -20,7 +20,7 @@ impl Block {
         use Block::*;
         Some(String::from(
             match self {
-                SmoothStone => "smooth_stone",
+                Stone => "stone",
                 //Wood => "wood",
                 _ => None?
             }   
@@ -29,6 +29,7 @@ impl Block {
     pub fn parallax(&self) -> bool {
         use Block::*;
         match self {
+            Stone => true,
             Wood => true,
             _ => false,
         }
@@ -36,7 +37,7 @@ impl Block {
     pub fn normal(&self) -> bool {
         use Block::*;
         match self {
-            SmoothStone => true,
+            Stone => true,
             Wood => true,
             _ => false,
         }
@@ -378,7 +379,7 @@ pub fn gen_chunk(position: SVector<isize, 3>) -> Chunk {
         );
 
         if density > 0.0 {
-            chunk.get_mut(i).block = Block::SmoothStone;
+            chunk.get_mut(i).block = Block::Stone;
         }
     }
 
@@ -419,33 +420,33 @@ pub fn cubic_block<F: Fn(&Block) -> Option<u32> + Copy>(
     for (i, dir) in NeighborDirection::iter().enumerate() {
         if ((info.visible_mask >> dir as u8) & 1) == 1 {
             let block_vertex_count = block_vertices.len() as u32;
-            let mut tint = nalgebra::convert::<_, SVector<f32, 3>>(position);
-            tint[0] = (tint[0] % 32.0) / 32.0;
-            tint[1] = (tint[1] % 32.0) / 32.0;
-            tint[2] = (tint[2] % 32.0) / 32.0;
-            let tint = SVector::<f32, 4>::new(tint[0], tint[1], tint[2], 1.0);
+            let mut tint = SVector::<f32, 4>::new(1.0, 1.0, 1.0, 1.0);
             block_vertices.extend([
                 BlockVertex::new(
                     VERTEX_OFFSETS[VERTEX_SIDE_ORDER[i][0]] + position,
                     SVector::<f32, 2>::new(0.0, 0.0),
+                    dir as u8,
                     (block_mapping)(&info.block).unwrap_or_default(),
                     tint,
                 ),
                 BlockVertex::new(
                     VERTEX_OFFSETS[VERTEX_SIDE_ORDER[i][1]] + position,
                     SVector::<f32, 2>::new(0.0, 1.0),
+                    dir as u8,
                     (block_mapping)(&info.block).unwrap_or_default(),
                     tint,
                 ),
                 BlockVertex::new(
                     VERTEX_OFFSETS[VERTEX_SIDE_ORDER[i][2]] + position,
                     SVector::<f32, 2>::new(1.0, 1.0),
+                    dir as u8,
                     (block_mapping)(&info.block).unwrap_or_default(),
                     tint,
                 ),
                 BlockVertex::new(
                     VERTEX_OFFSETS[VERTEX_SIDE_ORDER[i][3]] + position,
                     SVector::<f32, 2>::new(1.0, 0.0),
+                    dir as u8,
                     (block_mapping)(&info.block).unwrap_or_default(),
                     tint,
                 ),

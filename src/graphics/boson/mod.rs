@@ -404,19 +404,8 @@ impl super::GraphicsInterface for Boson {
             1.0, 0.0, 0.0, 0.0, 0.0, -1.0, 0.0, 0.0, 0.0, 0.0, 0.5, 0.5, 0.0, 0.0, 0.0, 1.0,
         );
 
-        self.staging.upload_buffer(
-            self.global_buffer,
-            0,
-            &[Camera {
-                proj: clip
-                    * Perspective3::new(
-                        self.width as f32 / self.height as f32,
-                        PI / 2.0,
-                        0.1,
-                        1000.0,
-                    )
-                    .into_inner(),
-                view: (SMatrix::<f32, 4, 4>::new_translation(&translation)
+        {
+            let trans = (SMatrix::<f32, 4, 4>::new_translation(&translation)
                     * (UnitQuaternion::from_axis_angle(
                         &Unit::new_normalize(SVector::<f32, 3>::new(0.0, 0.0, 1.0)),
                         look.x,
@@ -424,12 +413,27 @@ impl super::GraphicsInterface for Boson {
                         &Unit::new_normalize(SVector::<f32, 3>::new(1.0, 0.0, 0.0)),
                         look.y,
                     ))
-                    .to_homogeneous())
-                .try_inverse()
-                .unwrap(),
-            }],
-        );
-
+                    .to_homogeneous());
+                self.staging.upload_buffer(
+                    self.global_buffer,
+                    0,
+                    &[Camera {
+                        proj: clip
+                            * Perspective3::new(
+                                self.width as f32 / self.height as f32,
+                                PI / 2.0,
+                                0.1,
+                                1000.0,
+                            )
+                            .into_inner(),
+                        trans,
+                        view: trans
+                        .try_inverse()
+                        .unwrap(),
+                    }],
+                );
+        }
+        
         self.render_graph = Some(self.record(
             self.device.clone(),
             self.swapchain.clone().unwrap(),
