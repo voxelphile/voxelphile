@@ -1,14 +1,17 @@
 mod buffer;
 mod indirect;
 mod pool;
+mod atlas;
 
-use std::{f32::consts::PI, mem};
+use std::{f32::consts::PI, mem, fmt::Write};
+
+use crate::world::structure::Block;
 
 use self::{
     buffer::indirect::IndirectBuffer,
     buffer::{indirect::indirect_buffer_task, staging::StagingBuffer},
     indirect::IndirectData,
-    pool::{index_pool_task, vertex_pool_task, Pool},
+    pool::{index_pool_task, vertex_pool_task, Pool}, atlas::Atlas,
 };
 use boson::{
     commands::RenderPassBeginInfo,
@@ -43,6 +46,7 @@ pub struct Boson {
     width: u32,
     height: u32,
     depth: Image,
+    atlas: Atlas,
 }
 
 impl Boson {
@@ -133,6 +137,7 @@ impl Boson {
                             offset: 0,
                             range: 4096,
                         },
+                        WriteBinding::Image(boson.atlas.image())
                     ],
                 )?;
 
@@ -317,6 +322,7 @@ impl super::GraphicsInterface for Boson {
                     Binding::Buffer,
                     Binding::Buffer,
                     Binding::Buffer,
+                    Binding::Image
                 ]),
                 raster: Raster {
                     face_cull: FaceCull::BACK,
@@ -354,9 +360,11 @@ impl super::GraphicsInterface for Boson {
             BufferUsage::TRANSFER_DST | BufferUsage::TRANSFER_SRC | BufferUsage::STORAGE,
             3000,
         );
-        let staging = StagingBuffer::new(device.clone());
+        let mut staging = StagingBuffer::new(device.clone());
         let opaque_indirect = IndirectBuffer::new(device.clone());
         let winit::dpi::PhysicalSize { width, height } = window.inner_size();
+
+        let atlas = Atlas::load(&device, &mut staging);
 
         let mut boson = Self {
             swapchain: None,
@@ -377,6 +385,7 @@ impl super::GraphicsInterface for Boson {
             width,
             height,
             depth,
+            atlas,
         };
 
         {
@@ -468,5 +477,9 @@ impl super::GraphicsInterface for Boson {
             indices,
             indirect,
         }
+    }
+
+    fn block_mapping(&self, block: &Block) -> Option<u32> {
+        self.atlas.block_mapping(block)
     }
 }

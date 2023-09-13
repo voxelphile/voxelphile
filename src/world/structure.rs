@@ -7,14 +7,40 @@ use strum_macros::EnumIter;
 
 use crate::graphics::{vertex::BlockVertex, BlockMesh};
 
-#[derive(Clone, Copy, Debug)]
+#[derive(EnumIter, Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[repr(u16)]
 pub enum Block {
     Air,
-    Stone,
+    SmoothStone,
+    Wood,
 }
 
 impl Block {
+    pub fn texture_name(&self) -> Option<String> {
+        use Block::*;
+        Some(String::from(
+            match self {
+                SmoothStone => "smooth_stone",
+                //Wood => "wood",
+                _ => None?
+            }   
+        ))
+    }
+    pub fn parallax(&self) -> bool {
+        use Block::*;
+        match self {
+            Wood => true,
+            _ => false,
+        }
+    }
+    pub fn normal(&self) -> bool {
+        use Block::*;
+        match self {
+            SmoothStone => true,
+            Wood => true,
+            _ => false,
+        }
+    }
     pub fn is_opaque(&self) -> bool {
         !matches!(self, Block::Air)
     }
@@ -352,7 +378,7 @@ pub fn gen_chunk(position: SVector<isize, 3>) -> Chunk {
         );
 
         if density > 0.0 {
-            chunk.get_mut(i).block = Block::Stone;
+            chunk.get_mut(i).block = Block::SmoothStone;
         }
     }
 
@@ -363,9 +389,10 @@ pub fn gen_chunk(position: SVector<isize, 3>) -> Chunk {
     chunk
 }
 
-pub fn cubic_block(
+pub fn cubic_block<F: Fn(&Block) -> Option<u32> + Copy>(
     info: &BlockInfo,
     position: SVector<usize, 3>,
+    block_mapping: F,
     block_vertices: &mut Vec<BlockVertex>,
     block_indices: &mut Vec<u32>,
 ) {
@@ -392,31 +419,35 @@ pub fn cubic_block(
     for (i, dir) in NeighborDirection::iter().enumerate() {
         if ((info.visible_mask >> dir as u8) & 1) == 1 {
             let block_vertex_count = block_vertices.len() as u32;
-            let mut color = nalgebra::convert::<_, SVector<f32, 3>>(position);
-            color[0] = (color[0] % 32.0) / 32.0;
-            color[1] = (color[1] % 32.0) / 32.0;
-            color[2] = (color[2] % 32.0) / 32.0;
-            let color = SVector::<f32, 4>::new(color[0], color[1], color[2], 1.0);
+            let mut tint = nalgebra::convert::<_, SVector<f32, 3>>(position);
+            tint[0] = (tint[0] % 32.0) / 32.0;
+            tint[1] = (tint[1] % 32.0) / 32.0;
+            tint[2] = (tint[2] % 32.0) / 32.0;
+            let tint = SVector::<f32, 4>::new(tint[0], tint[1], tint[2], 1.0);
             block_vertices.extend([
                 BlockVertex::new(
                     VERTEX_OFFSETS[VERTEX_SIDE_ORDER[i][0]] + position,
                     SVector::<f32, 2>::new(0.0, 0.0),
-                    color,
+                    (block_mapping)(&info.block).unwrap_or_default(),
+                    tint,
                 ),
                 BlockVertex::new(
                     VERTEX_OFFSETS[VERTEX_SIDE_ORDER[i][1]] + position,
-                    SVector::<f32, 2>::new(0.0, 0.0),
-                    color,
+                    SVector::<f32, 2>::new(0.0, 1.0),
+                    (block_mapping)(&info.block).unwrap_or_default(),
+                    tint,
                 ),
                 BlockVertex::new(
                     VERTEX_OFFSETS[VERTEX_SIDE_ORDER[i][2]] + position,
-                    SVector::<f32, 2>::new(0.0, 0.0),
-                    color,
+                    SVector::<f32, 2>::new(1.0, 1.0),
+                    (block_mapping)(&info.block).unwrap_or_default(),
+                    tint,
                 ),
                 BlockVertex::new(
                     VERTEX_OFFSETS[VERTEX_SIDE_ORDER[i][3]] + position,
-                    SVector::<f32, 2>::new(0.0, 0.0),
-                    color,
+                    SVector::<f32, 2>::new(1.0, 0.0),
+                    (block_mapping)(&info.block).unwrap_or_default(),
+                    tint,
                 ),
             ]);
 
@@ -432,7 +463,7 @@ pub fn cubic_block(
     }
 }
 
-pub fn gen_block_mesh<S: Structure>(s: &S) -> (Vec<BlockVertex>, Vec<u32>) {
+pub fn gen_block_mesh<S: Structure, F: Fn(&Block) -> Option<u32> + Copy>(s: &S, block_mapping: F) -> (Vec<BlockVertex>, Vec<u32>) {
     let mut block_vertices = vec![];
     let mut block_indices = vec![];
 
@@ -441,6 +472,7 @@ pub fn gen_block_mesh<S: Structure>(s: &S) -> (Vec<BlockVertex>, Vec<u32>) {
             cubic_block(
                 info,
                 s.delinearize(i),
+                block_mapping,
                 &mut block_vertices,
                 &mut block_indices,
             );

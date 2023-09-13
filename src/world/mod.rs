@@ -182,7 +182,7 @@ impl World {
                 let Some(ChunkState::Stasis { chunk, .. }) = self.chunks.remove(&position) else {
                     continue;
                 };
-                let (vertices, indices) = gen_block_mesh(&chunk);
+                let (vertices, indices) = gen_block_mesh(&chunk, |block| graphics.block_mapping(block));
                 let mesh = graphics.create_block_mesh(BlockMesh {
                     vertices: &vertices,
                     indices: &indices,

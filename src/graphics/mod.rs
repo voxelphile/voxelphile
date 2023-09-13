@@ -3,6 +3,8 @@ use nalgebra::{SMatrix, SVector};
 use vertex::*;
 use winit::window::Window;
 
+use crate::world::structure::Block;
+
 //#[cfg(feature = "boson")]
 mod boson;
 //#[cfg(feature = "boson")]
@@ -11,6 +13,7 @@ pub type Graphics = boson::Boson;
 pub trait GraphicsInterface {
     fn init(window: &Window) -> Self;
     fn create_block_mesh(&mut self, info: BlockMesh<'_>) -> Mesh;
+    fn block_mapping(&self, block: &Block) -> Option<u32>;
     fn resize(&mut self, width: u32, height: u32);
     fn render(&mut self, look: SVector<f32, 2>, translation: SVector<f32, 3>);
 }
