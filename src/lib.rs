@@ -64,6 +64,7 @@ pub fn main() {
     let mut direction = SVector::<f32, 3>::new(0.0, 0.0, 0.0);
     let mut look = SVector::<f32, 2>::new(0.0, 0.0);
     let mut translation = SVector::<f32, 3>::new(0.0, 0.0, 0.0);
+    
 
     let start_time = time::Instant::now();
     let mut last_delta_time = start_time;
@@ -180,8 +181,7 @@ pub fn main() {
 
                 cursor_movement = Default::default();
 
-                translation += 30.0
-                    * delta_time
+                translation += 0.25 * delta_time
                     * (UnitQuaternion::from_axis_angle(
                         &Unit::new_normalize(SVector::<f32, 3>::new(0.0, 0.0, 1.0)),
                         look.x,
@@ -189,6 +189,7 @@ pub fn main() {
                     .to_rotation_matrix()
                         * direction);
 
+               
                 world.load(&mut graphics, translation);
 
                 graphics.render(look, translation);

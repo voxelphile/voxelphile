@@ -420,7 +420,7 @@ pub fn cubic_block<F: Fn(&Block) -> Option<u32> + Copy>(
     for (i, dir) in NeighborDirection::iter().enumerate() {
         if ((info.visible_mask >> dir as u8) & 1) == 1 {
             let block_vertex_count = block_vertices.len() as u32;
-            let mut tint = SVector::<f32, 4>::new(1.0, 1.0, 1.0, 1.0);
+            let tint = SVector::<f32, 4>::new(1.0, 1.0, 1.0, 1.0);
             block_vertices.extend([
                 BlockVertex::new(
                     VERTEX_OFFSETS[VERTEX_SIDE_ORDER[i][0]] + position,
