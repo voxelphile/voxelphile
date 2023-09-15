@@ -18,13 +18,11 @@ pub enum Block {
 impl Block {
     pub fn texture_name(&self) -> Option<String> {
         use Block::*;
-        Some(String::from(
-            match self {
-                Stone => "stone",
-                //Wood => "wood",
-                _ => None?
-            }   
-        ))
+        Some(String::from(match self {
+            Stone => "stone",
+            //Wood => "wood",
+            _ => None?,
+        }))
     }
     pub fn parallax(&self) -> bool {
         use Block::*;
@@ -464,7 +462,10 @@ pub fn cubic_block<F: Fn(&Block) -> Option<u32> + Copy>(
     }
 }
 
-pub fn gen_block_mesh<S: Structure, F: Fn(&Block) -> Option<u32> + Copy>(s: &S, block_mapping: F) -> (Vec<BlockVertex>, Vec<u32>) {
+pub fn gen_block_mesh<S: Structure, F: Fn(&Block) -> Option<u32> + Copy>(
+    s: &S,
+    block_mapping: F,
+) -> (Vec<BlockVertex>, Vec<u32>) {
     let mut block_vertices = vec![];
     let mut block_indices = vec![];
 

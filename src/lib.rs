@@ -1,7 +1,11 @@
+#![feature(let_chains)]
 mod graphics;
 mod world;
+pub mod input;
 use graphics::{vertex::BlockVertex, *};
-use nalgebra::{SVector, Unit, UnitQuaternion};
+use nalgebra::SVector;
+use input::Input;
+use world::entity::Entity;
 use std::{f32::consts::PI, ops, time};
 use winit::{
     dpi::{PhysicalPosition, PhysicalSize},
@@ -60,14 +64,15 @@ pub fn main() {
     let mut world = World::new(48);
 
     let mut cursor_captured = false;
-    let mut cursor_movement = SVector::<f32, 2>::new(0.0, 0.0);
-    let mut direction = SVector::<f32, 3>::new(0.0, 0.0, 0.0);
-    let mut look = SVector::<f32, 2>::new(0.0, 0.0);
-    let mut translation = SVector::<f32, 3>::new(0.0, 0.0, 0.0);
-    
 
     let start_time = time::Instant::now();
     let mut last_delta_time = start_time;
+
+    let player_id = world.spawn(world::entity::Entity::Player { translation: Default::default(), look: Default::default(), input: Default::default(), speed: 10.4 });
+    world.set_observer(player_id);
+
+    let mut cursor_movement = SVector::<f32, 2>::default();
+    let mut observer_input = Input::default();
 
     event_loop.run_return(move |event, _, control_flow| {
         control_flow.set_poll();
@@ -112,12 +117,12 @@ pub fn main() {
                         window.set_cursor_grab(CursorGrabMode::None).unwrap();
                         window.set_cursor_visible(true);
                     }
-                    VirtualKeyCode::D => direction.x = keyboard_input.state.to_dir(1.0),
-                    VirtualKeyCode::A => direction.x = keyboard_input.state.to_dir(-1.0),
-                    VirtualKeyCode::W => direction.y = keyboard_input.state.to_dir(1.0),
-                    VirtualKeyCode::S => direction.y = keyboard_input.state.to_dir(-1.0),
-                    VirtualKeyCode::Space => direction.z = keyboard_input.state.to_dir(1.0),
-                    VirtualKeyCode::LShift => direction.z = keyboard_input.state.to_dir(-1.0),
+                    VirtualKeyCode::D => observer_input.direction.x = keyboard_input.state.to_dir(1.0),
+                    VirtualKeyCode::A => observer_input.direction.x = keyboard_input.state.to_dir(-1.0),
+                    VirtualKeyCode::W => observer_input.direction.y = keyboard_input.state.to_dir(1.0),
+                    VirtualKeyCode::S => observer_input.direction.y = keyboard_input.state.to_dir(-1.0),
+                    VirtualKeyCode::Space => observer_input.direction.z = keyboard_input.state.to_dir(1.0),
+                    VirtualKeyCode::LShift => observer_input.direction.z = keyboard_input.state.to_dir(-1.0),
                     _ => {}
                 }
             }
@@ -174,24 +179,18 @@ pub fn main() {
                 let delta_time = now.duration_since(last_delta_time).as_secs_f32();
                 last_delta_time = now;
 
-                let sensitivity = 2e-3;
-                look.x -= sensitivity * cursor_movement.x;
-                look.y -= sensitivity * cursor_movement.y;
-                look.y = look.y.clamp(0.0, PI);
+                const SENSITIVITY: f32 = 2e-3;
 
+                world.supply_observer_input(Input { gaze: SENSITIVITY * -cursor_movement, ..observer_input});
                 cursor_movement = Default::default();
+                world.tick(delta_time);
+                world.load();
+                world.display(&mut graphics);
 
-                translation += 0.25 * delta_time
-                    * (UnitQuaternion::from_axis_angle(
-                        &Unit::new_normalize(SVector::<f32, 3>::new(0.0, 0.0, 1.0)),
-                        look.x,
-                    )
-                    .to_rotation_matrix()
-                        * direction);
-
-               
-                world.load(&mut graphics, translation);
-
+                use Entity::*;
+                let (translation, look) = match world.get_observer() {
+                    Player { translation, look, .. } => (*translation, *look),
+                };
                 graphics.render(look, translation);
             }
             _ => (),

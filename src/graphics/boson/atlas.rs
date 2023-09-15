@@ -1,10 +1,10 @@
 use std::collections::HashMap;
 
+use crate::graphics::boson::StagingBuffer;
 use crate::world::structure::Block;
-use boson::prelude::{Image, Device, ImageInfo, ImageUsage, Format};
+use boson::prelude::{Device, Format, Image, ImageInfo, ImageUsage};
 use strum::IntoEnumIterator;
 use strum_macros::EnumIter;
-use crate::graphics::boson::StagingBuffer;
 
 pub struct Atlas {
     mapping: HashMap<Block, u32>,
@@ -21,11 +21,12 @@ enum ImageType {
 impl ImageType {
     fn compatible(&self, block: &Block) -> bool {
         use ImageType::*;
-        block.texture_name().is_some() && match self {
-            Heightmap => block.parallax(),
-            Normal => block.normal(),
-            _ => true,
-        }
+        block.texture_name().is_some()
+            && match self {
+                Heightmap => block.parallax(),
+                Normal => block.normal(),
+                _ => true,
+            }
     }
 }
 
@@ -33,17 +34,18 @@ const TEX_SIZE: usize = 128;
 const ATLAS_AXIS: usize = 16;
 
 fn load_image_data<S: AsRef<str>>(str: S, ty: ImageType) -> Vec<f32> {
-    use std::io::Cursor;
     use image::io::Reader as ImageReader;
+    use std::io::Cursor;
     use ImageType::*;
 
     let mut name = str.as_ref().to_owned();
-    name =  String::from("./assets/") + &name;
-    name = name + match ty {
-        Heightmap => "_s",
-        Normal => "_n",
-        _ => ""
-    };
+    name = String::from("./assets/") + &name;
+    name = name
+        + match ty {
+            Heightmap => "_s",
+            Normal => "_n",
+            _ => "",
+        };
     name = name + ".png";
     dbg!(&name);
     let img = ImageReader::open(&name).unwrap().decode().unwrap();
@@ -59,12 +61,18 @@ impl Atlas {
 
         let depth = ImageType::iter().count();
 
-        let image = device.create_image(ImageInfo { 
-            extent: boson::prelude::ImageExtent::ThreeDim(ATLAS_AXIS * TEX_SIZE, ATLAS_AXIS * TEX_SIZE, depth),
-            usage: ImageUsage::COLOR | ImageUsage::TRANSFER_DST,
-            format: Format::Rgba32Sfloat,
-            debug_name: "atlas",
-        }).unwrap();
+        let image = device
+            .create_image(ImageInfo {
+                extent: boson::prelude::ImageExtent::ThreeDim(
+                    ATLAS_AXIS * TEX_SIZE,
+                    ATLAS_AXIS * TEX_SIZE,
+                    depth,
+                ),
+                usage: ImageUsage::COLOR | ImageUsage::TRANSFER_DST,
+                format: Format::Rgba32Sfloat,
+                debug_name: "atlas",
+            })
+            .unwrap();
 
         let mut mapping = HashMap::<Block, u32>::new();
 
@@ -73,7 +81,7 @@ impl Atlas {
                 continue;
             };
             mapping.insert(block, cursor);
-            
+
             let x = cursor as usize % ATLAS_AXIS;
             let y = cursor as usize / ATLAS_AXIS;
 
@@ -84,16 +92,18 @@ impl Atlas {
 
                 let pixel_data = load_image_data(&name, ty);
 
-                staging.upload_image(image, (x * TEX_SIZE, y * TEX_SIZE, i), (TEX_SIZE, TEX_SIZE, 1), &pixel_data);
+                staging.upload_image(
+                    image,
+                    (x * TEX_SIZE, y * TEX_SIZE, i),
+                    (TEX_SIZE, TEX_SIZE, 1),
+                    &pixel_data,
+                );
             }
-            
+
             cursor += 1;
         }
 
-        Atlas {
-            mapping,
-            image,
-        }
+        Atlas { mapping, image }
     }
 
     pub fn image(&self) -> Image {

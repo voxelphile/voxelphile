@@ -1,8 +1,10 @@
+pub mod entity;
 pub mod structure;
 
 use crate::graphics::{BlockMesh, Graphics, GraphicsInterface, Mesh};
+use crate::input::Input;
 use crossbeam::channel::{self, Receiver, Sender};
-use nalgebra::SVector;
+use nalgebra::{SVector, Unit, UnitQuaternion};
 use std::collections::VecDeque;
 use std::thread;
 use std::{
@@ -13,6 +15,7 @@ use std::{
 };
 use structure::Chunk;
 
+use self::entity::Entity;
 use self::structure::{
     calc_block_visible_mask_between_chunks, gen_block_mesh, gen_chunk, neighbors, BlockInfo,
     Structure, CHUNK_AXIS, CHUNK_SIZE,
@@ -35,6 +38,10 @@ pub struct World {
     load_chunk_order: VecDeque<SVector<isize, 3>>,
     recalculate_needed_chunks: bool,
     chunk_needed_iter: Box<dyn Iterator<Item = usize>>,
+    entity_cursor: usize,
+    observer_entity: usize,
+    loader_entities: HashSet<usize>,
+    entities: HashMap<usize, Entity>,
 }
 
 impl World {
@@ -63,57 +70,147 @@ impl World {
             load_chunk_order: VecDeque::new(),
             recalculate_needed_chunks: false,
             chunk_needed_iter: Box::new(0..0),
+            entity_cursor: 0,
+            observer_entity: 0,
+            loader_entities: HashSet::new(),
+            entities: HashMap::new(),
         }
     }
 
-    pub fn load(&mut self, graphics: &mut Graphics, translation_f: SVector<f32, 3>) {
-        let translation = nalgebra::try_convert::<_, SVector<isize, 3>>(translation_f).unwrap();
+    pub fn spawn(&mut self, entity: Entity) -> usize {
+        let id = self.entity_cursor;
+        self.entities.insert(id, entity);
+        self.entity_cursor += 1;
+        id
+    }
 
-        let chunk_translation = translation / CHUNK_AXIS as isize;
+    pub fn supply_observer_input(&mut self, input: Input) {
+        use Entity::*;
+        *match self.entities.get_mut(&self.observer_entity).unwrap() {
+            Player {input,..} => input
+        } = input;
+    }
 
-        if self.last_translation.metric_distance(&translation_f) >= self.view_distance as f32 / 4.0 
-        {
-            self.last_translation = translation_f;
-            let side_length = 2 * self.view_distance + 1;
-            let total_chunks = side_length * side_length * side_length;
-            self.chunk_needed_iter = Box::new(0..total_chunks);
-            self.load_chunk_order = VecDeque::with_capacity(total_chunks);
-            self.recalculate_needed_chunks = true;
+    pub fn get_observer(&self) -> &Entity {
+        &self.entities[&self.observer_entity]
+    }
+
+    pub fn set_observer(&mut self, id: usize) {
+        self.observer_entity = id;
+        self.loader_entities.insert(id);
+    }
+
+    pub fn tick(&mut self, delta_time: f32) {
+        for (id, entity) in &mut self.entities {
+            use Entity::*;
+            match entity {
+                Player { translation, look, input, speed } => {
+                    movement(delta_time, translation, look, input, *speed);
+                }
+            }
         }
+        
 
-        if self.recalculate_needed_chunks {
-            let mut a = 0;
-            loop {
-                let Some(i) = self.chunk_needed_iter.next() else {
-                self.recalculate_needed_chunks = false;
-                break;
+    }
+
+    pub fn display(&mut self, graphics: &mut Graphics) {
+        let observer_entity = &self.entities[&self.observer_entity];
+        let mut activate = HashSet::new();
+        let mut iter = self
+            .chunks
+            .iter()
+            .filter(|(_, x)| matches!(x, ChunkState::Stasis { .. }));
+
+        while let Some((position, ChunkState::Stasis { neighbors, .. })) = iter.next() {
+            if *neighbors == 6 {
+                activate.insert(*position);
+            }
+        }
+        for position in activate {
+            
+            use Entity::*;
+            let translation_f = match observer_entity {
+                Player { translation, .. } => translation
             };
-                let mut b = 0;
-                let mut pos = SVector::<isize, 3>::new(0, 0, 0);
-                'a: for j in 0..self.view_distance as isize {
-                    for x in -j..=j {
-                        for y in -j..=j {
-                            for z in -j..=j {
-                                if x.abs() != j && y.abs() != j && z.abs() != j {
-                                    continue;
+
+            let position_f = nalgebra::convert::<_, SVector<f32, 3>>(position) * CHUNK_AXIS as f32;
+            if position_f.metric_distance(&translation_f)
+                > self.view_distance as f32 * CHUNK_AXIS as f32
+            {
+                continue;
+            }
+            let Some(ChunkState::Stasis { chunk, .. }) = self.chunks.remove(&position) else {
+                    continue;
+                };
+            let (vertices, indices) = gen_block_mesh(&chunk, |block| graphics.block_mapping(block));
+            let mesh = graphics.create_block_mesh(BlockMesh {
+                vertices: &vertices,
+                indices: &indices,
+                position: position_f,
+            });
+
+            self.chunks
+                .insert(position, ChunkState::Active { chunk, mesh });
+        }
+    }
+    pub fn load(&mut self) {
+        for entity_id in &self.loader_entities {
+            let entity = &self.entities[entity_id];
+
+            use Entity::*;
+            let translation_f = match entity {
+                Player { translation, .. } => translation
+            };
+
+            let translation =
+                nalgebra::try_convert::<_, SVector<isize, 3>>(*translation_f).unwrap();
+
+            let chunk_translation = translation / CHUNK_AXIS as isize;
+
+            if self.last_translation.metric_distance(&translation_f)
+                >= self.view_distance as f32 / 4.0
+            {
+                self.last_translation = *translation_f;
+                let side_length = 2 * self.view_distance + 1;
+                let total_chunks = side_length * side_length * side_length;
+                self.chunk_needed_iter = Box::new(0..total_chunks);
+                self.load_chunk_order = VecDeque::with_capacity(total_chunks);
+                self.recalculate_needed_chunks = true;
+            }
+
+            if self.recalculate_needed_chunks {
+                let mut a = 0;
+                loop {
+                    let Some(i) = self.chunk_needed_iter.next() else {
+                    self.recalculate_needed_chunks = false;
+                    break;
+                };
+                    let mut b = 0;
+                    let mut pos = SVector::<isize, 3>::new(0, 0, 0);
+                    'a: for j in 0..self.view_distance as isize {
+                        for x in -j..=j {
+                            for y in -j..=j {
+                                for z in -j..=j {
+                                    if x.abs() != j && y.abs() != j && z.abs() != j {
+                                        continue;
+                                    }
+                                    if i == b {
+                                        pos = SVector::<isize, 3>::new(x, y, z);
+                                        break 'a;
+                                    }
+                                    b += 1;
                                 }
-                                if i == b {
-                                    pos = SVector::<isize, 3>::new(x, y, z);
-                                    break 'a;
-                                }
-                                b += 1;
                             }
                         }
                     }
-                }
-                let pos = pos + chunk_translation;
-                if !self.loaded.contains(&pos) {
-                    self.load_chunk_order
-                    .push_back(pos);
-                }
-                a += 1;
-                if a >= 10 {
-                    break;
+                    let pos = pos + chunk_translation;
+                    if !self.loaded.contains(&pos) {
+                        self.load_chunk_order.push_back(pos);
+                    }
+                    a += 1;
+                    if a >= 10 {
+                        break;
+                    }
                 }
             }
         }
@@ -165,35 +262,19 @@ impl World {
                 );
             }
         }
-
-        {
-            let mut activate = HashSet::new();
-            let mut iter = self
-                .chunks
-                .iter()
-                .filter(|(_, x)| matches!(x, ChunkState::Stasis { .. }));
-
-            while let Some((position, ChunkState::Stasis { neighbors, .. })) = iter.next() {
-                if *neighbors == 6 {
-                    activate.insert(*position);
-                }
-            }
-            for position in activate {
-                let Some(ChunkState::Stasis { chunk, .. }) = self.chunks.remove(&position) else {
-                    continue;
-                };
-                let (vertices, indices) = gen_block_mesh(&chunk, |block| graphics.block_mapping(block));
-                let mesh = graphics.create_block_mesh(BlockMesh {
-                    vertices: &vertices,
-                    indices: &indices,
-                    position: nalgebra::convert::<_, SVector<f32, 3>>(position) * CHUNK_AXIS as f32,
-                });
-
-                self.chunks
-                    .insert(position, ChunkState::Active { chunk, mesh });
-            }
-        }
     }
+}
+
+fn movement(delta_time: f32, translation: &mut SVector<f32, 3>, look: &mut SVector<f32, 2>, input: &Input, speed: f32) {
+        *look += input.gaze;
+        *translation += speed * delta_time
+        * (UnitQuaternion::from_axis_angle(
+            &Unit::new_normalize(SVector::<f32, 3>::new(0.0, 0.0, 1.0)),
+            look.x,
+        )
+        .to_rotation_matrix()
+            * input.direction);
+    
 }
 
 pub struct GenReq {

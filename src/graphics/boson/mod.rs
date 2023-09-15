@@ -1,17 +1,18 @@
+mod atlas;
 mod buffer;
 mod indirect;
 mod pool;
-mod atlas;
 
-use std::{f32::consts::PI, mem, fmt::Write};
+use std::{f32::consts::PI, fmt::Write, mem};
 
 use crate::world::structure::Block;
 
 use self::{
+    atlas::Atlas,
     buffer::indirect::IndirectBuffer,
     buffer::{indirect::indirect_buffer_task, staging::StagingBuffer},
     indirect::IndirectData,
-    pool::{index_pool_task, vertex_pool_task, Pool}, atlas::Atlas,
+    pool::{index_pool_task, vertex_pool_task, Pool},
 };
 use boson::{
     commands::RenderPassBeginInfo,
@@ -137,7 +138,7 @@ impl Boson {
                             offset: 0,
                             range: 4096,
                         },
-                        WriteBinding::Image(boson.atlas.image())
+                        WriteBinding::Image(boson.atlas.image()),
                     ],
                 )?;
 
@@ -322,7 +323,7 @@ impl super::GraphicsInterface for Boson {
                     Binding::Buffer,
                     Binding::Buffer,
                     Binding::Buffer,
-                    Binding::Image
+                    Binding::Image,
                 ]),
                 raster: Raster {
                     face_cull: FaceCull::BACK,
@@ -406,34 +407,32 @@ impl super::GraphicsInterface for Boson {
 
         {
             let trans = (SMatrix::<f32, 4, 4>::new_translation(&translation)
-                    * (UnitQuaternion::from_axis_angle(
-                        &Unit::new_normalize(SVector::<f32, 3>::new(0.0, 0.0, 1.0)),
-                        look.x,
-                    ) * UnitQuaternion::from_axis_angle(
-                        &Unit::new_normalize(SVector::<f32, 3>::new(1.0, 0.0, 0.0)),
-                        look.y,
-                    ))
-                    .to_homogeneous());
-                self.staging.upload_buffer(
-                    self.global_buffer,
-                    0,
-                    &[Camera {
-                        proj: clip
-                            * Perspective3::new(
-                                self.width as f32 / self.height as f32,
-                                PI / 2.0,
-                                0.1,
-                                1000.0,
-                            )
-                            .into_inner(),
-                        trans,
-                        view: trans
-                        .try_inverse()
-                        .unwrap(),
-                    }],
-                );
+                * (UnitQuaternion::from_axis_angle(
+                    &Unit::new_normalize(SVector::<f32, 3>::new(0.0, 0.0, 1.0)),
+                    look.x,
+                ) * UnitQuaternion::from_axis_angle(
+                    &Unit::new_normalize(SVector::<f32, 3>::new(1.0, 0.0, 0.0)),
+                    look.y,
+                ))
+                .to_homogeneous());
+            self.staging.upload_buffer(
+                self.global_buffer,
+                0,
+                &[Camera {
+                    proj: clip
+                        * Perspective3::new(
+                            self.width as f32 / self.height as f32,
+                            PI / 2.0,
+                            0.1,
+                            1000.0,
+                        )
+                        .into_inner(),
+                    trans,
+                    view: trans.try_inverse().unwrap(),
+                }],
+            );
         }
-        
+
         self.render_graph = Some(self.record(
             self.device.clone(),
             self.swapchain.clone().unwrap(),
