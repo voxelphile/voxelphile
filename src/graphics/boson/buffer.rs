@@ -347,6 +347,7 @@ pub mod staging {
                     },
                 });
             }
+            let len = image_uploads.len();
             for (i, upload) in image_uploads.into_iter().enumerate() {
                 let Upload::Image { image, data, dst, size } = upload else {
                     continue;
@@ -451,7 +452,7 @@ pub mod indirect {
     };
 
     use crate::graphics::{
-        boson::{indirect::IndirectData, Boson},
+        boson::{indirect::BlockIndirectData, Boson},
         Indirect,
     };
 
@@ -529,7 +530,7 @@ pub mod indirect {
         }
     }
 
-    pub(crate) fn indirect_buffer_task(
+    pub(crate) fn block_indirect_buffer_task(
         render_graph_builder: &mut RenderGraphBuilder<Boson>,
         boson: &mut Boson,
     ) {
@@ -541,7 +542,7 @@ pub mod indirect {
             let Some(buffer) = indirect_buffer.growable_buffer.buffer() else {
                 return;
             };
-            uploads.push((buffer, idx * mem::size_of::<IndirectData>(), [data.clone()]));
+            uploads.push((buffer, idx * mem::size_of::<BlockIndirectData>(), [data.clone()]));
         }
         indirect_buffer.uploads.clear();
         for (buffer, offset, data) in uploads {

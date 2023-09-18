@@ -1,11 +1,11 @@
 #![feature(let_chains)]
 mod graphics;
-mod world;
 pub mod input;
+mod world;
+use band::{Entity, Registry};
 use graphics::{vertex::BlockVertex, *};
-use nalgebra::SVector;
 use input::Input;
-use world::entity::Entity;
+use nalgebra::SVector;
 use std::{f32::consts::PI, ops, time};
 use winit::{
     dpi::{PhysicalPosition, PhysicalSize},
@@ -13,9 +13,15 @@ use winit::{
     platform::run_return::EventLoopExtRunReturn,
     window::{CursorGrabMode, WindowBuilder},
 };
+use world::entity::{Loader, Speed};
 use world::{
     structure::{gen_block_mesh, gen_chunk, CHUNK_AXIS},
     World,
+};
+
+use crate::world::{
+    entity::{Break, Look, Main, Observer, Place, Translation},
+    block::Block,
 };
 
 pub struct EventLoop(pub winit::event_loop::EventLoop<()>);
@@ -61,15 +67,33 @@ pub fn main() {
 
     let mut graphics = Graphics::init(&window);
 
-    let mut world = World::new(48);
+    let mut world = World::new();
 
     let mut cursor_captured = false;
 
     let start_time = time::Instant::now();
     let mut last_delta_time = start_time;
 
-    let player_id = world.spawn(world::entity::Entity::Player { translation: Default::default(), look: Default::default(), input: Default::default(), speed: 10.4 });
-    world.set_observer(player_id);
+    let mut registry = Registry::default();
+
+    {
+        let entity = registry.spawn();
+        registry.insert(entity, Translation(SVector::<f32, 3>::new(0.0, 0.0, 20.0)));
+        registry.insert(entity, Look::default());
+        registry.insert(entity, Input::default());
+        registry.insert(entity, Observer { view_distance: 48 });
+        registry.insert(
+            entity,
+            Loader {
+                load_distance: 48,
+                last_translation_f: SVector::<f32, 3>::new(f32::MAX, f32::MAX, f32::MAX),
+                recalculate_needed_chunks: false,
+                chunk_needed_iter: Box::new(0..0),
+            },
+        );
+        registry.insert(entity, Speed(10.4));
+        registry.insert(entity, Main);
+    }
 
     let mut cursor_movement = SVector::<f32, 2>::default();
     let mut observer_input = Input::default();
@@ -117,12 +141,24 @@ pub fn main() {
                         window.set_cursor_grab(CursorGrabMode::None).unwrap();
                         window.set_cursor_visible(true);
                     }
-                    VirtualKeyCode::D => observer_input.direction.x = keyboard_input.state.to_dir(1.0),
-                    VirtualKeyCode::A => observer_input.direction.x = keyboard_input.state.to_dir(-1.0),
-                    VirtualKeyCode::W => observer_input.direction.y = keyboard_input.state.to_dir(1.0),
-                    VirtualKeyCode::S => observer_input.direction.y = keyboard_input.state.to_dir(-1.0),
-                    VirtualKeyCode::Space => observer_input.direction.z = keyboard_input.state.to_dir(1.0),
-                    VirtualKeyCode::LShift => observer_input.direction.z = keyboard_input.state.to_dir(-1.0),
+                    VirtualKeyCode::D => {
+                        observer_input.direction.x = keyboard_input.state.to_dir(1.0)
+                    }
+                    VirtualKeyCode::A => {
+                        observer_input.direction.x = keyboard_input.state.to_dir(-1.0)
+                    }
+                    VirtualKeyCode::W => {
+                        observer_input.direction.y = keyboard_input.state.to_dir(1.0)
+                    }
+                    VirtualKeyCode::S => {
+                        observer_input.direction.y = keyboard_input.state.to_dir(-1.0)
+                    }
+                    VirtualKeyCode::Space => {
+                        observer_input.direction.z = keyboard_input.state.to_dir(1.0)
+                    }
+                    VirtualKeyCode::LShift => {
+                        observer_input.direction.z = keyboard_input.state.to_dir(-1.0)
+                    }
                     _ => {}
                 }
             }
@@ -136,6 +172,20 @@ pub fn main() {
                     cursor_captured = true;
                     window.set_cursor_grab(CursorGrabMode::Confined).unwrap();
                     window.set_cursor_visible(false);
+                }
+                use band::*;
+                match (state, button) {
+                    (ElementState::Pressed, MouseButton::Left) => {
+                        if let Some((e, _)) = <(Entity, &Main)>::query(&mut registry).next() {
+                            registry.insert(e, Place(Block::Machine));
+                        }
+                    }
+                    (ElementState::Pressed, MouseButton::Right) => {
+                        if let Some((e, _)) = <(Entity, &Main)>::query(&mut registry).next() {
+                            registry.insert(e, Break(Block::Air));
+                        }
+                    }
+                    _ => {}
                 }
             }
             Event::WindowEvent {
@@ -180,18 +230,19 @@ pub fn main() {
                 last_delta_time = now;
 
                 const SENSITIVITY: f32 = 2e-3;
-
-                world.supply_observer_input(Input { gaze: SENSITIVITY * -cursor_movement, ..observer_input});
-                cursor_movement = Default::default();
-                world.tick(delta_time);
-                world.load();
-                world.display(&mut graphics);
-
-                use Entity::*;
-                let (translation, look) = match world.get_observer() {
-                    Player { translation, look, .. } => (*translation, *look),
-                };
-                graphics.render(look, translation);
+                use band::*;
+                if let Some((input, _)) = <(&mut Input, &Main)>::query(&mut registry).next()
+                {
+                    *input = Input {
+                        gaze: SENSITIVITY * -cursor_movement,
+                        ..observer_input
+                    };
+                }
+                cursor_movement = SVector::default();
+                world.tick(&mut registry, delta_time);
+                world.load(&mut registry);
+                world.display(&mut registry);
+                graphics.render(&mut registry);
             }
             _ => (),
         }

@@ -2,29 +2,50 @@ use nalgebra::SVector;
 
 use crate::input::Input;
 
+use super::block::Block;
+
 pub struct Hitbox {
-    offset: SVector<f32, 3>,
-    size: SVector<f32, 3>,
+    pub offset: SVector<f32, 3>,
+    pub size: SVector<f32, 3>,
 }
 
-pub enum Entity {
-    Player {
-        translation: SVector<f32, 3>,
-        look: SVector<f32, 2>,
-        input: Input,
-        speed: f32,
-    },
+#[derive(Default)]
+pub struct Translation(pub SVector<f32, 3>);
+#[derive(Default)]
+pub struct Look(pub SVector<f32, 2>);
+#[derive(Default)]
+pub struct Speed(pub f32);
+
+#[derive(Default)]
+pub struct Observer {
+    pub view_distance: usize,
 }
 
-impl Entity {
-    pub fn hitbox(&self) -> Hitbox {
-        use Entity::*;
-        match self {
-            Player { .. } => Hitbox {
-                offset: SVector::<f32, 3>::new(0.0, 0.0, 0.7),
-                size: SVector::<f32, 3>::new(0.4, 0.4, 1.8),
-            },
-        }
-    }
-    
+pub struct Loader {
+    pub load_distance: usize,
+    pub last_translation_f: SVector<f32, 3>,
+    pub recalculate_needed_chunks: bool,
+    pub chunk_needed_iter: Box<dyn Iterator<Item = usize> + Send + Sync>,
+}
+
+#[derive(Default)]
+pub struct Main;
+
+pub struct Place(pub Block);
+pub struct Break(pub Block);
+
+pub struct Dirty;
+
+pub type Degrees = f32;
+pub type Power = f32;
+pub type Resistance = f32;
+
+pub enum Temperature {
+    Ambient,
+    Unique(Degrees),
+}
+
+pub enum Electric {
+    Insulator(Resistance),
+    Conductive(Power),
 }

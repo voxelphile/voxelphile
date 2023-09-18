@@ -1,10 +1,16 @@
 pub mod entity;
+mod raycast;
 pub mod structure;
+pub mod block;
 
 use crate::graphics::{BlockMesh, Graphics, GraphicsInterface, Mesh};
 use crate::input::Input;
+use crate::world::entity::Break;
+use crate::world::structure::Direction;
+use band::{QueryExt, *};
 use crossbeam::channel::{self, Receiver, Sender};
 use nalgebra::{SVector, Unit, UnitQuaternion};
+use strum::IntoEnumIterator;
 use std::collections::VecDeque;
 use std::thread;
 use std::{
@@ -15,37 +21,33 @@ use std::{
 };
 use structure::Chunk;
 
-use self::entity::Entity;
+use self::entity::{Loader, Look, Observer, Place, Speed, Translation, Dirty};
+use self::raycast::Ray;
 use self::structure::{
-    calc_block_visible_mask_between_chunks, gen_block_mesh, gen_chunk, neighbors, BlockInfo,
-    Structure, CHUNK_AXIS, CHUNK_SIZE,
+    calc_block_visible_mask_between_chunks, calc_block_visible_mask_inside_structure,
+    gen_block_mesh, gen_chunk, neighbors, BlockInfo, Structure, CHUNK_AXIS, CHUNK_SIZE,
 };
 
-pub enum ChunkState {
-    Generating,
-    Stasis { chunk: Chunk, neighbors: u8 },
-    Active { chunk: Chunk, mesh: Mesh },
-}
+pub struct Neighbors(u8);
+pub struct Active;
+pub struct Stasis;
+pub struct Generating;
+pub struct RemoveChunkMesh;
+pub type ChunkPosition = SVector<isize, 3>;
+pub type LocalPosition = SVector<usize, 3>;
+pub type WorldPosition = SVector<isize, 3>;
 
 pub struct World {
-    chunks: HashMap<SVector<isize, 3>, ChunkState>,
-    loaded: HashSet<SVector<isize, 3>>,
+    chunks: HashMap<ChunkPosition, Entity>,
+    loaded: HashSet<ChunkPosition>,
     pre_generator: (Sender<GenReq>, Receiver<GenReq>),
     post_generator: (Sender<GenResp>, Receiver<GenResp>),
     _generators: Vec<JoinHandle<()>>,
-    view_distance: usize,
-    last_translation: SVector<f32, 3>,
-    load_chunk_order: VecDeque<SVector<isize, 3>>,
-    recalculate_needed_chunks: bool,
-    chunk_needed_iter: Box<dyn Iterator<Item = usize>>,
-    entity_cursor: usize,
-    observer_entity: usize,
-    loader_entities: HashSet<usize>,
-    entities: HashMap<usize, Entity>,
+    load_chunk_order: VecDeque<ChunkPosition>,
 }
 
 impl World {
-    pub fn new(view_distance: usize) -> Self {
+    pub fn new() -> Self {
         let (pre_generator_tx, pre_generator_rx) = channel::unbounded();
         let (post_generator_tx, post_generator_rx) = channel::unbounded();
         let _generators = (0..7)
@@ -60,65 +62,187 @@ impl World {
             .collect::<Vec<_>>();
 
         Self {
-            view_distance,
             pre_generator: (pre_generator_tx, pre_generator_rx),
             post_generator: (post_generator_tx, post_generator_rx),
             _generators,
             chunks: Default::default(),
             loaded: Default::default(),
-            last_translation: Default::default(),
             load_chunk_order: VecDeque::new(),
-            recalculate_needed_chunks: false,
-            chunk_needed_iter: Box::new(0..0),
-            entity_cursor: 0,
-            observer_entity: 0,
-            loader_entities: HashSet::new(),
-            entities: HashMap::new(),
         }
     }
 
-    pub fn spawn(&mut self, entity: Entity) -> usize {
-        let id = self.entity_cursor;
-        self.entities.insert(id, entity);
-        self.entity_cursor += 1;
-        id
-    }
+    pub fn tick(&mut self, registry: &mut Registry, delta_time: f32) {
+        for (Look(look), input) in <(&mut Look, &Input)>::query(registry) {
+            *look += input.gaze;
+        }
+        for (Translation(translation), Look(look), Speed(speed), input) in
+            <(&mut Translation, &Look, &Speed, &Input)>::query(registry)
+        {
+            *translation += speed
+                * delta_time
+                * (UnitQuaternion::from_axis_angle(
+                    &Unit::new_normalize(SVector::<f32, 3>::new(0.0, 0.0, 1.0)),
+                    look.x,
+                )
+                .to_rotation_matrix()
+                    * input.direction);
+        }
+        /*{
+            enum RaycastTarget {
+                Position,
+                Backstep,
+            }
+            let raycast = |world: &World,
+                           target: RaycastTarget,
+                           translation: SVector<f32, 3>,
+                           look: SVector<f32, 2>|
+             -> Option<(SVector<isize, 3>, SVector<usize, 3>)> {
+                let forward_4d = (UnitQuaternion::from_axis_angle(
+                    &Unit::new_normalize(SVector::<f32, 3>::new(0.0, 0.0, 1.0)),
+                    look.x,
+                ) * UnitQuaternion::from_axis_angle(
+                    &Unit::new_normalize(SVector::<f32, 3>::new(1.0, 0.0, 0.0)),
+                    look.y,
+                ))
+                .to_homogeneous()
+                    * SVector::<f32, 4>::new(0.0, 0.0, -1.0, 0.0);
+                let direction = SVector::<f32, 3>::new(forward_4d.x, forward_4d.y, forward_4d.z);
+                let origin = translation;
 
-    pub fn supply_observer_input(&mut self, input: Input) {
-        use Entity::*;
-        *match self.entities.get_mut(&self.observer_entity).unwrap() {
-            Player {input,..} => input
-        } = input;
-    }
+                let descriptor = raycast::Descriptor {
+                    origin,
+                    direction,
+                    minimum: SVector::<isize, 3>::new(isize::MIN, isize::MIN, isize::MIN),
+                    maximum: SVector::<isize, 3>::new(isize::MAX, isize::MAX, isize::MAX),
+                    max_distance: 10.0,
+                };
 
-    pub fn get_observer(&self) -> &Entity {
-        &self.entities[&self.observer_entity]
-    }
+                let mut ray = raycast::start(descriptor);
 
-    pub fn set_observer(&mut self, id: usize) {
-        self.observer_entity = id;
-        self.loader_entities.insert(id);
-    }
-
-    pub fn tick(&mut self, delta_time: f32) {
-        for (id, entity) in &mut self.entities {
-            use Entity::*;
-            match entity {
-                Player { translation, look, input, speed } => {
-                    movement(delta_time, translation, look, input, *speed);
+                while let raycast::State::Traversal { .. } = raycast::drive(world, &mut ray).state {
                 }
+
+                let Some(raycast::Hit { position, back_step, .. }) = raycast::hit(ray) else {
+                    None?
+                };
+
+                let target_position = if matches!(target, RaycastTarget::Position) {
+                    position
+                } else {
+                    back_step
+                };
+
+                let chunk_position = SVector::<isize, 3>::new(
+                    target_position.x.div_euclid(CHUNK_AXIS as isize),
+                    target_position.y.div_euclid(CHUNK_AXIS as isize),
+                    target_position.z.div_euclid(CHUNK_AXIS as isize),
+                );
+                let local_position = SVector::<usize, 3>::new(
+                    target_position.x.rem_euclid(CHUNK_AXIS as isize) as usize,
+                    target_position.y.rem_euclid(CHUNK_AXIS as isize) as usize,
+                    target_position.z.rem_euclid(CHUNK_AXIS as isize) as usize,
+                );
+                Some((chunk_position, local_position))
+            };
+            let mut modified_chunks = HashSet::<SVector<isize, 3>>::new();
+            let mut remove_place = HashSet::<Entity>::new();
+            let mut remove_break = HashSet::<Entity>::new();
+            for (e, Translation(translation), Look(look), Place(block)) in
+                <(Entity, &Translation, &Look, &Place)>::query(&mut registry)
+            {
+                remove_place.insert(e);
+
+                let Some((chunk_position, local_position)) = (raycast)(self, RaycastTarget::Backstep, *translation, *look) else {
+                    continue
+                };
+
+                let chunk = match self.get_chunk_state(registry, chunk_position) {
+                    Some(ChunkState::Active { chunk, .. }) => chunk,
+                    _ => continue,
+                };
+                chunk.get_mut(chunk.linearize(local_position)).block = *block;
+                modified_chunks.insert(chunk_position);
+            }
+            for (e, Translation(translation), Look(look), Break(block)) in
+                <(Entity, &Translation, &Look, &Break)>::query(&mut registry)
+            {
+                remove_break.insert(e);
+
+                let Some((chunk_position, local_position)) = (raycast)(self, RaycastTarget::Position, *translation, *look) else {
+                    continue
+                };
+
+                let chunk = match self.get_chunk_state(registry, chunk_position) {
+                    Some(ChunkState::Active { chunk, .. }) => chunk,
+                    _ => continue,
+                };
+                chunk.get_mut(chunk.linearize(local_position)).block = *block;
+                modified_chunks.insert(chunk_position);
+            }
+            let mut update_mesh = HashSet::new();
+            for position in modified_chunks {
+                let Some(mut chunk) = self.get_chunk(registry, position, |s| matches!(s, ChunkState::Active { .. })) else {
+                    continue;
+                };
+                for i in 0..CHUNK_SIZE {
+                    let mask_overlay = calc_block_visible_mask_inside_structure(chunk, i);
+                        chunk.get_mut(i).visible_mask = mask_overlay;
+                }
+                update_mesh.insert(position);
+                neighbors(position, |neighbor, dir, dimension, normal| {
+                    let (mut neighbor_chunk, active) = match self.get_chunk_state(registry, position) {
+                        Some(ChunkState::Stasis { chunk, .. }) => (chunk, false),
+                        Some(ChunkState::Active { chunk, .. }) => (chunk, true),
+                        _ => return,
+                    };
+
+                    let changed = calc_block_visible_mask_between_chunks(
+                        &mut chunk,
+                        &mut neighbor_chunk,
+                        dir,
+                        dimension,
+                        normal,
+                    );
+                    if changed && active {
+                        update_mesh.insert(neighbor);
+                    }
+                });
+            }
+            for position in update_mesh {
+                use ChunkState::*; 
+                match self.get_chunk_state(registry, position) {
+                    Some(Active { dirty, .. }) => *dirty = true,
+                    _ => {}
+                };
+            }
+            for e in remove_place {
+                registry.remove::<Place>(e);
+            }
+            for e in remove_break {
+                registry.remove::<Break>(e);
+            } }*/
+    }
+
+    pub fn display(&mut self, registry: &mut Registry) {
+        let Some((Translation(translation_f), _)) = <(&Translation, &Observer)>::query(registry).next() else {
+            return;
+        };
+        let mut activate = HashSet::new();
+        for (entity, neighbors, _, _) in <(Entity, &Neighbors, &Chunk, &Stasis)>::query(registry) {
+            if neighbors.0 == 6 {
+                activate.insert(entity);
             }
         }
-        
-
-    }
-
-    pub fn display(&mut self, graphics: &mut Graphics) {
-        let observer_entity = &self.entities[&self.observer_entity];
-        let mut activate = HashSet::new();
+        for entity in activate {
+            registry.remove::<Stasis>(entity);
+            registry.insert(entity, Active);
+            registry.insert(entity, Dirty);
+        }
+        /*let mut activate = HashSet::new();
         let mut iter = self
             .chunks
             .iter()
+            .map(|(p, e)| (p, registry.get(*e).unwrap()))
             .filter(|(_, x)| matches!(x, ChunkState::Stasis { .. }));
 
         while let Some((position, ChunkState::Stasis { neighbors, .. })) = iter.next() {
@@ -127,22 +251,18 @@ impl World {
             }
         }
         for position in activate {
-            
-            use Entity::*;
-            let translation_f = match observer_entity {
-                Player { translation, .. } => translation
-            };
-
             let position_f = nalgebra::convert::<_, SVector<f32, 3>>(position) * CHUNK_AXIS as f32;
             if position_f.metric_distance(&translation_f)
                 > self.view_distance as f32 * CHUNK_AXIS as f32
             {
                 continue;
             }
+            /*
             let Some(ChunkState::Stasis { chunk, .. }) = self.chunks.remove(&position) else {
                     continue;
                 };
-            let (vertices, indices) = gen_block_mesh(&chunk, |block| graphics.block_mapping(block));
+            let (vertices, indices) =
+                gen_block_mesh(&chunk, |block, dir| graphics.block_mapping(block, dir));
             let mesh = graphics.create_block_mesh(BlockMesh {
                 vertices: &vertices,
                 indices: &indices,
@@ -150,44 +270,49 @@ impl World {
             });
 
             self.chunks
-                .insert(position, ChunkState::Active { chunk, mesh });
-        }
-    }
-    pub fn load(&mut self) {
-        for entity_id in &self.loader_entities {
-            let entity = &self.entities[entity_id];
-
-            use Entity::*;
-            let translation_f = match entity {
-                Player { translation, .. } => translation
+                .insert(position, ChunkState::Active { chunk, mesh });*/
+            let Some(ChunkState::Stasis { chunk, .. }) = registry.remove::<ChunkState>(self.chunks[&position]) else {
+                continue;
             };
 
+            registry.insert(self.chunks[&position], ChunkState::Active { chunk, dirty: true });
+        }*/
+    }
+    pub fn load(&mut self, registry: &mut Registry) {
+        for (
+            Translation(translation_f),
+            Loader {
+                load_distance,
+                chunk_needed_iter,
+                recalculate_needed_chunks,
+                last_translation_f,
+            },
+        ) in <(&Translation, &mut Loader)>::query(registry)
+        {
             let translation =
                 nalgebra::try_convert::<_, SVector<isize, 3>>(*translation_f).unwrap();
 
             let chunk_translation = translation / CHUNK_AXIS as isize;
 
-            if self.last_translation.metric_distance(&translation_f)
-                >= self.view_distance as f32 / 4.0
+            if last_translation_f.metric_distance(&translation_f) >= *load_distance as f32 / 4.0
             {
-                self.last_translation = *translation_f;
-                let side_length = 2 * self.view_distance + 1;
+                *last_translation_f = *translation_f;
+                let side_length = 2 * *load_distance + 1;
                 let total_chunks = side_length * side_length * side_length;
-                self.chunk_needed_iter = Box::new(0..total_chunks);
-                self.load_chunk_order = VecDeque::with_capacity(total_chunks);
-                self.recalculate_needed_chunks = true;
+                *chunk_needed_iter = Box::new(0..total_chunks);
+                *recalculate_needed_chunks = true;
             }
 
-            if self.recalculate_needed_chunks {
+            if *recalculate_needed_chunks {
                 let mut a = 0;
                 loop {
-                    let Some(i) = self.chunk_needed_iter.next() else {
-                    self.recalculate_needed_chunks = false;
+                    let Some(i) = chunk_needed_iter.next() else {
+                    *recalculate_needed_chunks = false;
                     break;
                 };
                     let mut b = 0;
                     let mut pos = SVector::<isize, 3>::new(0, 0, 0);
-                    'a: for j in 0..self.view_distance as isize {
+                    'a: for j in 0..*load_distance as isize {
                         for x in -j..=j {
                             for y in -j..=j {
                                 for z in -j..=j {
@@ -214,8 +339,66 @@ impl World {
                 }
             }
         }
-
         for position in self.load_chunk_order.drain(..) {
+            let (pre_generator_tx, _) = &self.pre_generator;
+
+            let _ = pre_generator_tx.send(GenReq { position });
+
+            let entity = registry.spawn();
+            {
+                registry.insert(entity, Translation(nalgebra::convert::<_, SVector<f32, 3>>(position) * CHUNK_AXIS as f32));
+                registry.insert(entity, Chunk::default());
+                registry.insert(entity, Neighbors(0));
+                registry.insert(entity, Generating);
+            }
+            self.chunks.insert(position, entity);
+            self.loaded.insert(position);
+        }
+
+        {
+            let (_, post_generator_rx) = &self.post_generator;
+            while let Ok(GenResp {
+                position,
+                chunk: mut my_chunk,
+            }) = post_generator_rx.try_recv()
+            {
+                let entity = self.chunks[&position];
+
+                let mut neighbors_present = 0;
+                neighbors(position, |neighbor, dir, dimension, normal| {
+                    let Some(neighbor_entity) = self.chunks.get(&neighbor) else {
+                        return;
+                    };
+
+                    if registry.get::<Generating>(*neighbor_entity).is_some() {
+                        return;
+                    }
+
+                    if registry.get::<Stasis>(*neighbor_entity).is_some() {
+                        registry.get_mut::<Neighbors>(*neighbor_entity).unwrap().0 += 1;
+                    }
+
+                    neighbors_present += 1;
+
+                    let their_chunk = registry.get_mut::<Chunk>(*neighbor_entity).unwrap();
+
+                    calc_block_visible_mask_between_chunks(
+                        &mut my_chunk,
+                        their_chunk,
+                        dir,
+                        dimension,
+                        normal,
+                    );
+                });
+
+                *registry.get_mut::<Chunk>(entity).unwrap() = my_chunk;
+                registry.get_mut::<Neighbors>(entity).unwrap().0 = neighbors_present;
+                registry.remove::<Generating>(entity);
+                registry.insert(entity, Stasis);
+            }
+        }
+
+        /*for position in self.load_chunk_order.drain(..) {
             if !self.loaded.contains(&position) {
                 let (pre_generator_tx, _) = &self.pre_generator;
 
@@ -261,20 +444,8 @@ impl World {
                     },
                 );
             }
-        }
+        }*/
     }
-}
-
-fn movement(delta_time: f32, translation: &mut SVector<f32, 3>, look: &mut SVector<f32, 2>, input: &Input, speed: f32) {
-        *look += input.gaze;
-        *translation += speed * delta_time
-        * (UnitQuaternion::from_axis_angle(
-            &Unit::new_normalize(SVector::<f32, 3>::new(0.0, 0.0, 1.0)),
-            look.x,
-        )
-        .to_rotation_matrix()
-            * input.direction);
-    
 }
 
 pub struct GenReq {

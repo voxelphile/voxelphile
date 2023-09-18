@@ -5,9 +5,20 @@ use super::buffer::indirect::IndirectProvider;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
-pub struct IndirectData {
+pub struct BlockIndirectData {
     pub cmd: DrawIndirectCommand,
     pub position: SVector<f32, 4>,
 }
 
-impl IndirectProvider for IndirectData {}
+impl IndirectProvider for BlockIndirectData {}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct EntityIndirectData {
+    pub cmd: DrawIndirectCommand,
+    pub position: SVector<f32, 4>,
+    pub rotation: SVector<f32, 4>,
+    pub scale: SVector<f32, 4>,
+}
+
+impl IndirectProvider for EntityIndirectData {}

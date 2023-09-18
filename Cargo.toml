@@ -20,6 +20,8 @@ nalgebra = "*"
 strum = "*"
 strum_macros = "*"
 crossbeam = "*"
+rand = "*"
 noise = "*"
 lerp = "*"
 image = "*"
+band = { path = "../band" }

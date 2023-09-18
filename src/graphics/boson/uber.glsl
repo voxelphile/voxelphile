@@ -15,6 +15,7 @@ struct Camera {
     mat4 proj;
     mat4 view;
     mat4 trans;
+    uvec2 resolution;
 };
 struct IndirectData {
     DrawIndirectCommand cmd;
@@ -41,7 +42,7 @@ layout(location = 0) out vec4 position;
 layout(location = 1) out vec2 uv;
 layout(location = 2) out flat uint mapping;
 layout(location = 3) out vec4 tint;
-layout(location = 4) out flat uint dir;
+layout(location = 4) out flat ivec3 normal;
 
 void unpack(uvec4 data, out vec4 position, out vec2 uv, out uint dir, out uint mapping, out vec4 tint) {
     position.x = float((data.x >> 16) & 0xFF);
@@ -63,8 +64,27 @@ void unpack(uvec4 data, out vec4 position, out vec2 uv, out uint dir, out uint m
 void main() {
     Vertex vertex = vertices[indices[gl_VertexIndex]];
 
+    uint dir;
     unpack(vertex.data, position, uv, dir, mapping, tint);
 
+    if(dir == 0) {
+        normal = ivec3(1,0,0);
+    }
+    if(dir == 1) {
+        normal = ivec3(-1,0,0);
+    }
+    if(dir == 2) {
+        normal = ivec3(0,1,0);
+    }
+    if(dir == 3) {
+        normal = ivec3(0,-1,0);
+    }
+    if(dir == 4) {
+        normal = ivec3(0,0,1);
+    }
+    if(dir == 5) {
+        normal = ivec3(0,0,-1);
+    }
     position = vec4(indirect[gl_DrawID].position.xyz + position.xyz, 1);
 
 	gl_Position = camera.proj * camera.view * position;
@@ -76,11 +96,13 @@ layout(location = 0) in vec4 position;
 layout(location = 1) in vec2 uv;
 layout(location = 2) in flat uint mapping;
 layout(location = 3) in vec4 tint;
-layout(location = 4) in flat uint dir;
+layout(location = 4) in flat ivec3 normal;
 
-layout(location = 0) out vec4 result;
+layout(location = 0) out vec4 col;
+layout(location = 1) out vec4 pos;
+layout(location = 2) out vec4 norm;
 
-#define TEX_SIZE 128
+#define TEX_SIZE 16
 #define ATLAS_AXIS 16
 
 void main() { 
@@ -89,7 +111,9 @@ void main() {
     vec2 uvs = tex_pos_id + uv;
 
     vec4 albedo = imageLoad(atlas, ivec3(ivec2(uvs.xy * TEX_SIZE), 0));
-    result = tint * albedo;
+    col = tint * albedo;
+    pos = position;
+    norm = vec4(vec3(normal), 0);
 }
 
 #endif

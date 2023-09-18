@@ -7,47 +7,12 @@ use strum_macros::EnumIter;
 
 use crate::graphics::{vertex::BlockVertex, BlockMesh};
 
-#[derive(EnumIter, Clone, Copy, Debug, PartialEq, Eq, Hash)]
-#[repr(u16)]
-pub enum Block {
-    Air,
-    Stone,
-    Wood,
-}
+use super::block::Block;
 
-impl Block {
-    pub fn texture_name(&self) -> Option<String> {
-        use Block::*;
-        Some(String::from(match self {
-            Stone => "stone",
-            //Wood => "wood",
-            _ => None?,
-        }))
-    }
-    pub fn parallax(&self) -> bool {
-        use Block::*;
-        match self {
-            Stone => true,
-            Wood => true,
-            _ => false,
-        }
-    }
-    pub fn normal(&self) -> bool {
-        use Block::*;
-        match self {
-            Stone => true,
-            Wood => true,
-            _ => false,
-        }
-    }
-    pub fn is_opaque(&self) -> bool {
-        !matches!(self, Block::Air)
-    }
-}
 
 #[repr(u8)]
-#[derive(EnumIter, Clone, Copy)]
-pub enum NeighborDirection {
+#[derive(EnumIter, Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Direction {
     Left,
     Right,
     Forward,
@@ -56,9 +21,9 @@ pub enum NeighborDirection {
     Down,
 }
 
-impl NeighborDirection {
+impl Direction {
     pub fn opposite(self) -> Self {
-        use NeighborDirection::*;
+        use Direction::*;
         match self {
             Left => Right,
             Right => Left,
@@ -154,7 +119,21 @@ impl Structure for Blueprint {
 
 #[derive(Debug)]
 pub struct Chunk {
-    data: [BlockInfo; CHUNK_SIZE],
+    data: Vec<BlockInfo>,
+}
+
+impl Default for Chunk {
+    fn default() -> Self {
+        Self {
+            data: vec![
+                BlockInfo {
+                    block: Block::Air,
+                    visible_mask: 0xFF,
+                };
+                CHUNK_SIZE
+            ],
+        }
+    }
 }
 
 impl Structure for Chunk {
@@ -172,11 +151,11 @@ impl Structure for Chunk {
     }
 }
 
-pub fn neighbors<F: FnMut(SVector<isize, 3>, NeighborDirection, usize, isize)>(
+pub fn neighbors<F: FnMut(SVector<isize, 3>, Direction, usize, isize)>(
     pos: SVector<isize, 3>,
     mut f: F,
 ) {
-    let mut dir_iter = NeighborDirection::iter();
+    let mut dir_iter = Direction::iter();
     for d in 0..3 {
         for i in (-1..=1).step_by(2) {
             let dir = dir_iter.next().unwrap();
@@ -191,7 +170,7 @@ pub fn neighbors<F: FnMut(SVector<isize, 3>, NeighborDirection, usize, isize)>(
     }
 }
 
-fn inner_neighbors<F: FnMut(SVector<usize, 3>, NeighborDirection)>(
+fn inner_neighbors<F: FnMut(SVector<usize, 3>, Direction)>(
     pos: SVector<usize, 3>,
     axis: SVector<usize, 3>,
     mut f: F,
@@ -216,12 +195,16 @@ fn inner_neighbors<F: FnMut(SVector<usize, 3>, NeighborDirection)>(
     })
 }
 
-fn calc_block_visible_mask_inside_structure<S: Structure>(s: &S, i: usize) -> u8 {
+pub fn calc_block_visible_mask_inside_structure<S: Structure>(s: &S, i: usize) -> u8 {
     let mut mask = 0xFF;
     inner_neighbors(s.delinearize(i), s.axis(), |neighbor, dir| {
         let j = s.linearize(neighbor);
-        if s.contains(j) && s.get(j).block.is_opaque() {
-            mask &= !(1 << dir as u8);
+        if s.contains(j){
+            if s.get(j).block.is_opaque() {
+                mask &= !(1 << dir as u8);
+            } else {
+                mask |= 1 << dir as u8;
+            }
         }
     });
     mask
@@ -230,10 +213,11 @@ fn calc_block_visible_mask_inside_structure<S: Structure>(s: &S, i: usize) -> u8
 pub fn calc_block_visible_mask_between_chunks(
     chunk: &mut Chunk,
     neighbor: &mut Chunk,
-    dir: NeighborDirection,
+    dir: Direction,
     dimension: usize,
     normal: isize,
-) {
+) -> bool {
+    let mut changed = false;
     for u in 0..CHUNK_AXIS {
         for v in 0..CHUNK_AXIS {
             let mut my_block_position = SVector::<usize, 3>::new(0, 0, 0);
@@ -256,6 +240,9 @@ pub fn calc_block_visible_mask_between_chunks(
                 visible_mask: their_visible_mask,
             } = neighbor.get_mut(neighbor.linearize(their_block_position));
 
+            let my_visible_mask_reference = *my_visible_mask;
+            let their_visible_mask_reference = *their_visible_mask;
+
             if my_block.is_opaque() {
                 *their_visible_mask &= !(1 << dir.opposite() as u8);
             } else {
@@ -267,8 +254,13 @@ pub fn calc_block_visible_mask_between_chunks(
             } else {
                 *my_visible_mask |= 1 << dir as u8;
             }
+
+            changed = changed
+                || *my_visible_mask != my_visible_mask_reference
+                || *their_visible_mask != their_visible_mask_reference;
         }
     }
+    changed
 }
 
 pub fn gen_chunk(position: SVector<isize, 3>) -> Chunk {
@@ -276,12 +268,7 @@ pub fn gen_chunk(position: SVector<isize, 3>) -> Chunk {
         use lerp::Lerp;
         return f64::lerp(f64::lerp(a, b, f64::min(t, 0.0) + 1.0), c, f64::max(t, 0.0));
     }
-    let mut chunk = Chunk {
-        data: [BlockInfo {
-            block: Block::Air,
-            visible_mask: 0xFF,
-        }; CHUNK_SIZE],
-    };
+    let mut chunk = Chunk::default();
 
     let mut alpha = Fbm::<Simplex>::new(400);
     let mut beta = Fbm::<Simplex>::new(500);
@@ -388,7 +375,7 @@ pub fn gen_chunk(position: SVector<isize, 3>) -> Chunk {
     chunk
 }
 
-pub fn cubic_block<F: Fn(&Block) -> Option<u32> + Copy>(
+pub fn cubic_block<F: Fn(Block, Direction) -> Option<u32> + Copy>(
     info: &BlockInfo,
     position: SVector<usize, 3>,
     block_mapping: F,
@@ -415,7 +402,7 @@ pub fn cubic_block<F: Fn(&Block) -> Option<u32> + Copy>(
         [0, 1, 2, 3],
     ];
 
-    for (i, dir) in NeighborDirection::iter().enumerate() {
+    for (i, dir) in Direction::iter().enumerate() {
         if ((info.visible_mask >> dir as u8) & 1) == 1 {
             let block_vertex_count = block_vertices.len() as u32;
             let tint = SVector::<f32, 4>::new(1.0, 1.0, 1.0, 1.0);
@@ -424,28 +411,28 @@ pub fn cubic_block<F: Fn(&Block) -> Option<u32> + Copy>(
                     VERTEX_OFFSETS[VERTEX_SIDE_ORDER[i][0]] + position,
                     SVector::<f32, 2>::new(0.0, 0.0),
                     dir as u8,
-                    (block_mapping)(&info.block).unwrap_or_default(),
+                    (block_mapping)(info.block, dir).unwrap_or_default(),
                     tint,
                 ),
                 BlockVertex::new(
                     VERTEX_OFFSETS[VERTEX_SIDE_ORDER[i][1]] + position,
                     SVector::<f32, 2>::new(0.0, 1.0),
                     dir as u8,
-                    (block_mapping)(&info.block).unwrap_or_default(),
+                    (block_mapping)(info.block, dir).unwrap_or_default(),
                     tint,
                 ),
                 BlockVertex::new(
                     VERTEX_OFFSETS[VERTEX_SIDE_ORDER[i][2]] + position,
                     SVector::<f32, 2>::new(1.0, 1.0),
                     dir as u8,
-                    (block_mapping)(&info.block).unwrap_or_default(),
+                    (block_mapping)(info.block, dir).unwrap_or_default(),
                     tint,
                 ),
                 BlockVertex::new(
                     VERTEX_OFFSETS[VERTEX_SIDE_ORDER[i][3]] + position,
                     SVector::<f32, 2>::new(1.0, 0.0),
                     dir as u8,
-                    (block_mapping)(&info.block).unwrap_or_default(),
+                    (block_mapping)(info.block, dir).unwrap_or_default(),
                     tint,
                 ),
             ]);
@@ -462,7 +449,7 @@ pub fn cubic_block<F: Fn(&Block) -> Option<u32> + Copy>(
     }
 }
 
-pub fn gen_block_mesh<S: Structure, F: Fn(&Block) -> Option<u32> + Copy>(
+pub fn gen_block_mesh<S: Structure, F: Fn(Block, Direction) -> Option<u32> + Copy>(
     s: &S,
     block_mapping: F,
 ) -> (Vec<BlockVertex>, Vec<u32>) {
