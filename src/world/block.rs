@@ -2,7 +2,6 @@ use strum_macros::EnumIter;
 
 use crate::world::structure::Direction;
 
-
 #[derive(EnumIter, Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[repr(u16)]
 pub enum Block {

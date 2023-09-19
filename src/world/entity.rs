@@ -31,7 +31,10 @@ pub struct Loader {
 #[derive(Default)]
 pub struct Main;
 
-pub struct Place(pub Block);
+pub enum Change {
+    Place(Block),
+    Break(Block),
+}
 pub struct Break(pub Block);
 
 pub struct Dirty;

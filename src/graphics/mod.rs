@@ -4,7 +4,7 @@ use nalgebra::{SMatrix, SVector};
 use vertex::*;
 use winit::window::Window;
 
-use crate::world::{block::Block, structure::{Direction}};
+use crate::world::{block::Block, structure::Direction};
 
 //#[cfg(feature = "boson")]
 mod boson;

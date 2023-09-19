@@ -542,7 +542,11 @@ pub mod indirect {
             let Some(buffer) = indirect_buffer.growable_buffer.buffer() else {
                 return;
             };
-            uploads.push((buffer, idx * mem::size_of::<BlockIndirectData>(), [data.clone()]));
+            uploads.push((
+                buffer,
+                idx * mem::size_of::<BlockIndirectData>(),
+                [data.clone()],
+            ));
         }
         indirect_buffer.uploads.clear();
         for (buffer, offset, data) in uploads {

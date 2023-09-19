@@ -1,13 +1,11 @@
 use nalgebra::SVector;
 
-
 #[derive(Clone, Copy, Debug, Default)]
 #[repr(C)]
 pub struct EntityVertex {
     pub position: SVector<f32, 3>,
     pub color: SVector<f32, 4>,
 }
-
 
 #[derive(Clone, Copy, Debug, Default)]
 #[repr(C)]

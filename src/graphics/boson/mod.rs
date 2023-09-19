@@ -3,11 +3,19 @@ mod buffer;
 mod indirect;
 mod pool;
 
-use std::{f32::consts::PI, fmt::Write, mem, collections::{HashMap, HashSet}};
-use crate::world::{block::Block, RemoveChunkMesh, entity::{Dirty, Translation, Look, Observer}, structure::{Chunk, gen_block_mesh, Direction}, Active};
+use crate::world::{
+    block::Block,
+    entity::{Dirty, Look, Observer, Translation},
+    structure::{gen_block_mesh, Chunk, Direction},
+    Active, NeedsAoBorderCalc, RemoveChunkMesh,
+};
+use std::{
+    collections::{HashMap, HashSet},
+    f32::consts::PI,
+    fmt::Write,
+    mem,
+};
 
-use super::{BlockMesh, Mesh};
-use band::*;
 use self::{
     atlas::Atlas,
     buffer::indirect::IndirectBuffer,
@@ -15,6 +23,8 @@ use self::{
     indirect::{BlockIndirectData, EntityIndirectData},
     pool::{index_pool_task, vertex_pool_task, Pool},
 };
+use super::{BlockMesh, Mesh};
+use band::*;
 use boson::{
     commands::RenderPassBeginInfo,
     pipeline::{Binding, BindingState},
@@ -24,13 +34,13 @@ use nalgebra::{Perspective3, Projective3, Quaternion, SMatrix, SVector, Unit, Un
 use raw_window_handle::{HasRawDisplayHandle, HasRawWindowHandle};
 use winit::window::Window;
 
-use super::{vertex::{BlockVertex, EntityVertex}, Camera};
+use super::{
+    vertex::{BlockVertex, EntityVertex},
+    Camera,
+};
 
 static UBER_VERT_SHADER: &'static [u8] = include_bytes!("../../../assets/uber.vert.spirv");
 static UBER_FRAG_SHADER: &'static [u8] = include_bytes!("../../../assets/uber.frag.spirv");
-static POSTFX_SHADER: &'static [u8] = include_bytes!("../../../assets/postfx.comp.spirv");
-static BLUR_SHADER: &'static [u8] = include_bytes!("../../../assets/blur.comp.spirv");
-static COMPOSITE_SHADER: &'static [u8] = include_bytes!("../../../assets/composite.comp.spirv");
 
 #[derive(Clone, Copy)]
 pub struct BlurPush {
@@ -48,9 +58,6 @@ pub struct Boson {
     acquire_semaphore: BinarySemaphore,
     present_semaphore: BinarySemaphore,
     uber_pipeline: Pipeline,
-    postfx_pipeline: Pipeline,
-    blur_pipeline: Pipeline,
-    composite_pipeline: Pipeline,
     global_buffer: Buffer,
     block_vertices: Pool<BlockVertex>,
     block_indices: Pool<u32>,
@@ -76,7 +83,6 @@ pub struct Boson {
 }
 
 impl Boson {
-
     fn create_block_mesh(&mut self, info: super::BlockMesh) -> super::Mesh {
         let vertices = self.block_vertices.section(&info.vertices);
         let mut modified_indices = vec![];
@@ -118,7 +124,7 @@ impl Boson {
         self.atlas.block_mapping(block, dir)
     }
 
-    fn destroy_block_mesh(&mut self, mesh: super::Mesh){
+    fn destroy_block_mesh(&mut self, mesh: super::Mesh) {
         for bucket in mesh.vertices {
             self.block_vertices.unsection(bucket);
         }
@@ -253,197 +259,10 @@ impl Boson {
                 Ok(())
             },
         });
-
         render_graph_builder.add(Task {
             resources: vec![
-                Resource::Image(
-                    Box::new(|boson| boson.noise),
-                    ImageAccess::ComputeShaderReadOnly,
-                    Default::default(),
-                ),
-                Resource::Buffer(
-                    Box::new(move |boson| boson.global_buffer),
-                    BufferAccess::ShaderReadOnly,
-                ),
-                Resource::Image(
-                    Box::new(|boson| boson.ssao_kernel),
-                    ImageAccess::ComputeShaderReadOnly,
-                    Default::default(),
-                ),
-                Resource::Image(
-                    Box::new(|boson| boson.position),
-                    ImageAccess::ComputeShaderReadOnly,
-                    Default::default(),
-                ),
-                Resource::Image(
-                    Box::new(|boson| boson.normal),
-                    ImageAccess::ComputeShaderReadOnly,
-                    Default::default(),
-                ),
-                Resource::Image(
-                    Box::new(|boson| boson.ssao_output),
-                    ImageAccess::ComputeShaderWriteOnly,
-                    Default::default(),
-                ),
-            ],
-            task: move |boson, commands| {
-                commands.set_pipeline(&boson.postfx_pipeline);
-                commands.write_bindings(
-                    &boson.postfx_pipeline,
-                    vec![
-                        WriteBinding::Buffer {
-                            buffer: boson.global_buffer,
-                            offset: 0,
-                            range: 4096,
-                        },
-                        WriteBinding::Image(boson.noise),
-                        WriteBinding::Image(boson.ssao_kernel),
-                        WriteBinding::Image(boson.position),
-                        WriteBinding::Image(boson.normal),
-                        WriteBinding::Image(boson.ssao_output),
-                    ],
-                )?;
-                commands.dispatch(
-                    (boson.render_width as f32 / 8.0).ceil() as usize,
-                    (boson.render_height as f32 / 8.0).ceil() as usize,
-                    1,
-                );
-                Ok(())
-            },
-        });
-        render_graph_builder.add(Task {
-            resources: vec![
-                Resource::Image(
-                    Box::new(|boson| boson.normal),
-                    ImageAccess::ComputeShaderReadOnly,
-                    Default::default(),
-                ),
-                Resource::Buffer(
-                    Box::new(move |boson| boson.global_buffer),
-                    BufferAccess::ShaderReadOnly,
-                ),
-                Resource::Image(
-                    Box::new(|boson| boson.ssao_output),
-                    ImageAccess::ComputeShaderReadWrite,
-                    Default::default(),
-                ),
-            ],
-            task: move |boson, commands| {
-                commands.set_pipeline(&boson.blur_pipeline);
-                commands.write_bindings(
-                    &boson.blur_pipeline,
-                    vec![
-                        WriteBinding::Buffer {
-                            buffer: boson.global_buffer,
-                            offset: 0,
-                            range: 4096,
-                        },
-                        WriteBinding::Image(boson.normal),
-                        WriteBinding::Image(boson.ssao_output),
-                    ],
-                )?;
-                commands.push_constant(PushConstant {
-                    data: BlurPush { dir: 0 },
-                    pipeline: &boson.blur_pipeline,
-                });
-                commands.dispatch(
-                    (boson.render_width as f32 / 8.0).ceil() as usize,
-                    (boson.render_height as f32 / 8.0).ceil() as usize,
-                    1,
-                );
-
-                Ok(())
-            },
-        });
-        render_graph_builder.add(Task {
-            resources: vec![
-                Resource::Image(
-                    Box::new(|boson| boson.normal),
-                    ImageAccess::ComputeShaderReadOnly,
-                    Default::default(),
-                ),
-                Resource::Buffer(
-                    Box::new(move |boson| boson.global_buffer),
-                    BufferAccess::ShaderReadOnly,
-                ),
-                Resource::Image(
-                    Box::new(|boson| boson.ssao_output),
-                    ImageAccess::ComputeShaderReadWrite,
-                    Default::default(),
-                ),
-            ],
-            task: move |boson, commands| {
-                commands.set_pipeline(&boson.blur_pipeline);
-                commands.write_bindings(
-                    &boson.blur_pipeline,
-                    vec![
-                        WriteBinding::Buffer {
-                            buffer: boson.global_buffer,
-                            offset: 0,
-                            range: 4096,
-                        },
-                        WriteBinding::Image(boson.normal),
-                        WriteBinding::Image(boson.ssao_output),
-                    ],
-                )?;
-                commands.push_constant(PushConstant {
-                    data: BlurPush { dir: 1 },
-                    pipeline: &boson.blur_pipeline,
-                });
-                commands.dispatch(
-                    (boson.render_width as f32 / 8.0).ceil() as usize,
-                    (boson.render_height as f32 / 8.0).ceil() as usize,
-                    1,
-                );
-
-                Ok(())
-            },
-        });
-        render_graph_builder.add(Task {
-            resources: vec![
-                Resource::Image(
-                    Box::new(|boson| boson.ssao_output),
-                    ImageAccess::ComputeShaderReadOnly,
-                    Default::default(),
-                ),
                 Resource::Image(
                     Box::new(|boson| boson.color),
-                    ImageAccess::ComputeShaderReadOnly,
-                    Default::default(),
-                ),
-                Resource::Image(
-                    Box::new(|boson| boson.composite),
-                    ImageAccess::ComputeShaderWriteOnly,
-                    Default::default(),
-                ),
-            ],
-            task: move |boson, commands| {
-                commands.set_pipeline(&boson.composite_pipeline);
-                commands.write_bindings(
-                    &boson.composite_pipeline,
-                    vec![
-                        WriteBinding::Buffer {
-                            buffer: boson.global_buffer,
-                            offset: 0,
-                            range: 4096,
-                        },
-                        WriteBinding::Image(boson.ssao_output),
-                        WriteBinding::Image(boson.color),
-                        WriteBinding::Image(boson.composite),
-                    ],
-                )?;
-                commands.dispatch(
-                    (boson.render_width as f32 / 8.0).ceil() as usize,
-                    (boson.render_height as f32 / 8.0).ceil() as usize,
-                    1,
-                );
-                Ok(())
-            },
-        });
-        render_graph_builder.add(Task {
-            resources: vec![
-                Resource::Image(
-                    Box::new(|boson| boson.composite),
                     ImageAccess::TransferRead,
                     Default::default(),
                 ),
@@ -717,60 +536,6 @@ impl super::GraphicsInterface for Boson {
             })
             .unwrap();
 
-        let postfx_pipeline = pipeline_compiler
-            .create_compute_pipeline(ComputePipelineInfo {
-                shader: Shader {
-                    ty: ShaderType::Compute,
-                    source: POSTFX_SHADER.to_vec(),
-                    defines: vec![],
-                },
-                binding: BindingState::Binding(vec![
-                    Binding::Buffer,
-                    Binding::Image,
-                    Binding::Image,
-                    Binding::Image,
-                    Binding::Image,
-                    Binding::Image,
-                ]),
-                debug_name: "postfx".to_string(),
-                ..Default::default()
-            })
-            .unwrap();
-        let blur_pipeline = pipeline_compiler
-            .create_compute_pipeline(ComputePipelineInfo {
-                shader: Shader {
-                    ty: ShaderType::Compute,
-                    source: BLUR_SHADER.to_vec(),
-                    defines: vec![],
-                },
-                binding: BindingState::Binding(vec![
-                    Binding::Buffer,
-                    Binding::Image,
-                    Binding::Image,
-                ]),
-                push_constant_size: std::mem::size_of::<BlurPush>(),
-                debug_name: "blur".to_string(),
-                ..Default::default()
-            })
-            .unwrap();
-        let composite_pipeline = pipeline_compiler
-            .create_compute_pipeline(ComputePipelineInfo {
-                shader: Shader {
-                    ty: ShaderType::Compute,
-                    source: COMPOSITE_SHADER.to_vec(),
-                    defines: vec![],
-                },
-                binding: BindingState::Binding(vec![
-                    Binding::Buffer,
-                    Binding::Image,
-                    Binding::Image,
-                    Binding::Image,
-                ]),
-                debug_name: "composite".to_string(),
-                ..Default::default()
-            })
-            .unwrap();
-
         let framebuffers = vec![];
 
         let acquire_semaphore = device
@@ -824,7 +589,7 @@ impl super::GraphicsInterface for Boson {
             .unwrap();
         let ssao_kernel = device
             .create_image(ImageInfo {
-                extent: ImageExtent::OneDim(8),
+                extent: ImageExtent::OneDim(32),
                 usage: ImageUsage::TRANSFER_DST,
                 format: Format::Rgba32Sfloat,
                 debug_name: "ssao_kernel",
@@ -842,7 +607,7 @@ impl super::GraphicsInterface for Boson {
         }
         {
             let mut samples = Vec::<f32>::new();
-            for i in 0..8 {
+            for i in 0..16 {
                 let mut sample = SVector::<f32, 3>::new(
                     rng.gen_range::<f32, _, _>(0.0, 1.0) * 2.0 - 1.0,
                     rng.gen_range::<f32, _, _>(0.0, 1.0) * 2.0 - 1.0,
@@ -850,7 +615,7 @@ impl super::GraphicsInterface for Boson {
                 );
                 sample = sample.normalize();
                 sample *= rng.gen_range::<f32, _, _>(0.0, 1.0);
-                let mut scale = i as f32 / 8.0;
+                let mut scale = i as f32 / 16.0;
                 use lerp::Lerp;
                 scale = Lerp::lerp(0.1, 1.0, scale * scale);
                 sample *= scale;
@@ -859,7 +624,7 @@ impl super::GraphicsInterface for Boson {
                 samples.push(sample.z);
                 samples.push(0.0);
             }
-            staging.upload_image(ssao_kernel, (0, 0, 0), (8, 1, 1), &samples);
+            staging.upload_image(ssao_kernel, (0, 0, 0), (16, 1, 1), &samples);
         }
 
         let atlas = Atlas::load(&device, &mut staging);
@@ -896,9 +661,6 @@ impl super::GraphicsInterface for Boson {
             ssao_output,
             position,
             normal,
-            postfx_pipeline,
-            composite_pipeline,
-            blur_pipeline,
             entity_vertices,
             entity_indices,
             entity_indirect,
@@ -923,8 +685,16 @@ impl super::GraphicsInterface for Boson {
         let mut remove_dirty = HashSet::new();
         let mut remove_mesh = HashSet::new();
         let mut add_mesh = HashMap::new();
-
-        for (entity, chunk, Translation(position), _, _, mesh) in <(Entity, &Chunk, &Translation, &Active, &Dirty, Option<&Mesh>)>::query(registry) {
+        for (entity, chunk, Translation(position), _, _, mesh, _) in <(
+            Entity,
+            &Chunk,
+            &Translation,
+            &Active,
+            &Dirty,
+            Option<&Mesh>,
+            Without<NeedsAoBorderCalc>,
+        )>::query(registry)
+        {
             let (vertices, indices) =
                 gen_block_mesh(chunk, |block, dir| self.block_mapping(block, dir));
             if let Some(_) = mesh {
@@ -932,16 +702,19 @@ impl super::GraphicsInterface for Boson {
             }
             remove_dirty.insert(entity);
             let position = *position;
-            add_mesh.insert(entity, BlockMesh {
-                vertices,
-                indices,
-                position,
-            });
+            add_mesh.insert(
+                entity,
+                BlockMesh {
+                    vertices,
+                    indices,
+                    position,
+                },
+            );
         }
 
         for (entity, _, _, _) in <(Entity, &Chunk, &Mesh, &RemoveChunkMesh)>::query(registry) {
             remove_mesh.insert(entity);
-        } 
+        }
 
         for entity in remove_mesh {
             self.destroy_block_mesh(registry.remove::<Mesh>(entity).unwrap());

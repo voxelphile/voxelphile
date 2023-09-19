@@ -110,8 +110,18 @@ void main() {
 
     vec2 uvs = tex_pos_id + uv;
 
-    vec4 albedo = imageLoad(atlas, ivec3(ivec2(uvs.xy * TEX_SIZE), 0));
-    col = tint * albedo;
+    vec2 dx = dFdx(uvs) * 0.25;
+    vec2 dy = dFdy(uvs) * 0.25;
+
+    float epsilon = 0.01;
+
+    vec3 albedo = vec3(0); 
+    albedo += imageLoad(atlas, ivec3(clamp(uvs.xy + dx + dy, tex_pos_id + epsilon, tex_pos_id + 1 - epsilon) * TEX_SIZE, 0)).rgb;
+    albedo += imageLoad(atlas, ivec3(clamp(uvs.xy - dx + dy, tex_pos_id + epsilon, tex_pos_id + 1 - epsilon) * TEX_SIZE, 0)).rgb;
+    albedo += imageLoad(atlas, ivec3(clamp(uvs.xy + dx - dy, tex_pos_id + epsilon, tex_pos_id + 1 - epsilon) * TEX_SIZE, 0)).rgb;
+    albedo += imageLoad(atlas, ivec3(clamp(uvs.xy - dx - dy, tex_pos_id + epsilon, tex_pos_id + 1 - epsilon) * TEX_SIZE, 0)).rgb;
+    albedo *= 0.25;
+    col = tint * vec4(albedo, 1);
     pos = position;
     norm = vec4(vec3(normal), 0);
 }

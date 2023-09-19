@@ -1,16 +1,15 @@
+pub mod block;
 pub mod entity;
 mod raycast;
 pub mod structure;
-pub mod block;
 
 use crate::graphics::{BlockMesh, Graphics, GraphicsInterface, Mesh};
 use crate::input::Input;
-use crate::world::entity::Break;
+use crate::world::entity::{Break, Change};
 use crate::world::structure::Direction;
 use band::{QueryExt, *};
 use crossbeam::channel::{self, Receiver, Sender};
 use nalgebra::{SVector, Unit, UnitQuaternion};
-use strum::IntoEnumIterator;
 use std::collections::VecDeque;
 use std::thread;
 use std::{
@@ -20,12 +19,14 @@ use std::{
     time::Duration,
 };
 use structure::Chunk;
+use strum::IntoEnumIterator;
 
-use self::entity::{Loader, Look, Observer, Place, Speed, Translation, Dirty};
+use self::entity::{Dirty, Loader, Look, Observer, Speed, Translation};
 use self::raycast::Ray;
 use self::structure::{
-    calc_block_visible_mask_between_chunks, calc_block_visible_mask_inside_structure,
-    gen_block_mesh, gen_chunk, neighbors, BlockInfo, Structure, CHUNK_AXIS, CHUNK_SIZE,
+    calc_and_set_ambient_between_chunk_neighbors, calc_block_visible_mask_between_chunks,
+    calc_block_visible_mask_inside_structure, gen_block_mesh, gen_chunk, neighbors, BlockInfo,
+    Structure, CHUNK_AXIS, CHUNK_SIZE,
 };
 
 pub struct Neighbors(u8);
@@ -33,12 +34,16 @@ pub struct Active;
 pub struct Stasis;
 pub struct Generating;
 pub struct RemoveChunkMesh;
+pub struct NeedsAoBorderCalc;
+pub struct Lod(pub u8);
+pub struct Unique;
 pub type ChunkPosition = SVector<isize, 3>;
 pub type LocalPosition = SVector<usize, 3>;
 pub type WorldPosition = SVector<isize, 3>;
 
 pub struct World {
     chunks: HashMap<ChunkPosition, Entity>,
+    mapping: HashMap<Entity, ChunkPosition>,
     loaded: HashSet<ChunkPosition>,
     pre_generator: (Sender<GenReq>, Receiver<GenReq>),
     post_generator: (Sender<GenResp>, Receiver<GenResp>),
@@ -66,6 +71,7 @@ impl World {
             post_generator: (post_generator_tx, post_generator_rx),
             _generators,
             chunks: Default::default(),
+            mapping: Default::default(),
             loaded: Default::default(),
             load_chunk_order: VecDeque::new(),
         }
@@ -87,16 +93,19 @@ impl World {
                 .to_rotation_matrix()
                     * input.direction);
         }
-        /*{
+
+        {
             enum RaycastTarget {
                 Position,
                 Backstep,
             }
-            let raycast = |world: &World,
-                           target: RaycastTarget,
-                           translation: SVector<f32, 3>,
-                           look: SVector<f32, 2>|
-             -> Option<(SVector<isize, 3>, SVector<usize, 3>)> {
+            fn raycast<'a>(
+                world: &'a World,
+                registry: &'a Registry,
+                target: RaycastTarget,
+                translation: SVector<f32, 3>,
+                look: SVector<f32, 2>,
+            ) -> Option<(SVector<isize, 3>, SVector<usize, 3>)> {
                 let forward_4d = (UnitQuaternion::from_axis_angle(
                     &Unit::new_normalize(SVector::<f32, 3>::new(0.0, 0.0, 1.0)),
                     look.x,
@@ -115,6 +124,8 @@ impl World {
                     minimum: SVector::<isize, 3>::new(isize::MIN, isize::MIN, isize::MIN),
                     maximum: SVector::<isize, 3>::new(isize::MAX, isize::MAX, isize::MAX),
                     max_distance: 10.0,
+                    chunks: &world.chunks,
+                    registry,
                 };
 
                 let mut ray = raycast::start(descriptor);
@@ -123,8 +134,8 @@ impl World {
                 }
 
                 let Some(raycast::Hit { position, back_step, .. }) = raycast::hit(ray) else {
-                    None?
-                };
+                None?
+            };
 
                 let target_position = if matches!(target, RaycastTarget::Position) {
                     position
@@ -145,82 +156,198 @@ impl World {
                 Some((chunk_position, local_position))
             };
             let mut modified_chunks = HashSet::<SVector<isize, 3>>::new();
-            let mut remove_place = HashSet::<Entity>::new();
-            let mut remove_break = HashSet::<Entity>::new();
-            for (e, Translation(translation), Look(look), Place(block)) in
-                <(Entity, &Translation, &Look, &Place)>::query(&mut registry)
+            let mut remove_change = HashSet::<Entity>::new();
+            for (e, Translation(translation), Look(look), change) in
+                <(Entity, &Translation, &Look, &Change)>::query(registry)
             {
-                remove_place.insert(e);
+                remove_change.insert(e);
 
-                let Some((chunk_position, local_position)) = (raycast)(self, RaycastTarget::Backstep, *translation, *look) else {
-                    continue
-                };
+                use Change::*;
+                let target = match change { Place(_) => RaycastTarget::Backstep, Break(_) => RaycastTarget::Position};
+                let Some((chunk_position, local_position)) = raycast(self, registry, target, *translation, *look) else {
+                continue
+            };
 
-                let chunk = match self.get_chunk_state(registry, chunk_position) {
-                    Some(ChunkState::Active { chunk, .. }) => chunk,
-                    _ => continue,
+                let chunk = registry
+                    .get_mut::<Chunk>(self.chunks[&chunk_position])
+                    .unwrap();
+                
+                chunk.get_mut(chunk.linearize(local_position)).block = match *change {
+                    Place(b) => b,
+                    Break(b) => b
                 };
-                chunk.get_mut(chunk.linearize(local_position)).block = *block;
-                modified_chunks.insert(chunk_position);
-            }
-            for (e, Translation(translation), Look(look), Break(block)) in
-                <(Entity, &Translation, &Look, &Break)>::query(&mut registry)
-            {
-                remove_break.insert(e);
-
-                let Some((chunk_position, local_position)) = (raycast)(self, RaycastTarget::Position, *translation, *look) else {
-                    continue
-                };
-
-                let chunk = match self.get_chunk_state(registry, chunk_position) {
-                    Some(ChunkState::Active { chunk, .. }) => chunk,
-                    _ => continue,
-                };
-                chunk.get_mut(chunk.linearize(local_position)).block = *block;
                 modified_chunks.insert(chunk_position);
             }
             let mut update_mesh = HashSet::new();
+            let mut needs_ao_recalc = HashSet::<SVector<isize, 3>>::new();
             for position in modified_chunks {
-                let Some(mut chunk) = self.get_chunk(registry, position, |s| matches!(s, ChunkState::Active { .. })) else {
-                    continue;
-                };
+                let mut chunk = registry.remove::<Chunk>(self.chunks[&position]).unwrap();
                 for i in 0..CHUNK_SIZE {
-                    let mask_overlay = calc_block_visible_mask_inside_structure(chunk, i);
-                        chunk.get_mut(i).visible_mask = mask_overlay;
+                    let mask_overlay = calc_block_visible_mask_inside_structure(&chunk, i);
+                    chunk.get_mut(i).visible_mask = mask_overlay;
                 }
                 update_mesh.insert(position);
                 neighbors(position, |neighbor, dir, dimension, normal| {
-                    let (mut neighbor_chunk, active) = match self.get_chunk_state(registry, position) {
-                        Some(ChunkState::Stasis { chunk, .. }) => (chunk, false),
-                        Some(ChunkState::Active { chunk, .. }) => (chunk, true),
-                        _ => return,
-                    };
+                    let neighbor_chunk = registry.get_mut::<Chunk>(self.chunks[&neighbor]).unwrap();
 
                     let changed = calc_block_visible_mask_between_chunks(
                         &mut chunk,
-                        &mut neighbor_chunk,
+                        neighbor_chunk,
                         dir,
                         dimension,
                         normal,
                     );
-                    if changed && active {
+                    if changed {
+                        needs_ao_recalc.insert(position);
+                        needs_ao_recalc.insert(neighbor);
+                    }
+                    if changed && registry.get::<Active>(self.chunks[&neighbor]).is_some() {
                         update_mesh.insert(neighbor);
                     }
                 });
+                registry.insert::<Chunk>(self.chunks[&position], chunk);
+            }
+            for position in needs_ao_recalc {
+                registry.insert(self.chunks[&position], NeedsAoBorderCalc);
             }
             for position in update_mesh {
-                use ChunkState::*; 
-                match self.get_chunk_state(registry, position) {
-                    Some(Active { dirty, .. }) => *dirty = true,
-                    _ => {}
+                registry.insert(self.chunks[&position], Dirty);
+            }
+            for e in remove_change {
+                registry.remove::<Change>(e);
+            }
+        }
+        /*{
+
+        let raycast = |world: &World,
+                       target: RaycastTarget,
+                       translation: SVector<f32, 3>,
+                       look: SVector<f32, 2>|
+         -> Option<(SVector<isize, 3>, SVector<usize, 3>)> {
+            let forward_4d = (UnitQuaternion::from_axis_angle(
+                &Unit::new_normalize(SVector::<f32, 3>::new(0.0, 0.0, 1.0)),
+                look.x,
+            ) * UnitQuaternion::from_axis_angle(
+                &Unit::new_normalize(SVector::<f32, 3>::new(1.0, 0.0, 0.0)),
+                look.y,
+            ))
+            .to_homogeneous()
+                * SVector::<f32, 4>::new(0.0, 0.0, -1.0, 0.0);
+            let direction = SVector::<f32, 3>::new(forward_4d.x, forward_4d.y, forward_4d.z);
+            let origin = translation;
+
+            let descriptor = raycast::Descriptor {
+                origin,
+                direction,
+                minimum: SVector::<isize, 3>::new(isize::MIN, isize::MIN, isize::MIN),
+                maximum: SVector::<isize, 3>::new(isize::MAX, isize::MAX, isize::MAX),
+                max_distance: 10.0,
+            };
+
+            let mut ray = raycast::start(descriptor);
+
+            while let raycast::State::Traversal { .. } = raycast::drive(world, &mut ray).state {
+            }
+
+            let Some(raycast::Hit { position, back_step, .. }) = raycast::hit(ray) else {
+                None?
+            };
+
+            let target_position = if matches!(target, RaycastTarget::Position) {
+                position
+            } else {
+                back_step
+            };
+
+            let chunk_position = SVector::<isize, 3>::new(
+                target_position.x.div_euclid(CHUNK_AXIS as isize),
+                target_position.y.div_euclid(CHUNK_AXIS as isize),
+                target_position.z.div_euclid(CHUNK_AXIS as isize),
+            );
+            let local_position = SVector::<usize, 3>::new(
+                target_position.x.rem_euclid(CHUNK_AXIS as isize) as usize,
+                target_position.y.rem_euclid(CHUNK_AXIS as isize) as usize,
+                target_position.z.rem_euclid(CHUNK_AXIS as isize) as usize,
+            );
+            Some((chunk_position, local_position))
+        };
+        let mut modified_chunks = HashSet::<SVector<isize, 3>>::new();
+        let mut remove_place = HashSet::<Entity>::new();
+        let mut remove_break = HashSet::<Entity>::new();
+        for (e, Translation(translation), Look(look), Place(block)) in
+            <(Entity, &Translation, &Look, &Place)>::query(&mut registry)
+        {
+            remove_place.insert(e);
+
+            let Some((chunk_position, local_position)) = (raycast)(self, RaycastTarget::Backstep, *translation, *look) else {
+                continue
+            };
+
+            let chunk = match self.get_chunk_state(registry, chunk_position) {
+                Some(ChunkState::Active { chunk, .. }) => chunk,
+                _ => continue,
+            };
+            chunk.get_mut(chunk.linearize(local_position)).block = *block;
+            modified_chunks.insert(chunk_position);
+        }
+        for (e, Translation(translation), Look(look), Break(block)) in
+            <(Entity, &Translation, &Look, &Break)>::query(&mut registry)
+        {
+            remove_break.insert(e);
+
+            let Some((chunk_position, local_position)) = (raycast)(self, RaycastTarget::Position, *translation, *look) else {
+                continue
+            };
+
+            let chunk = match self.get_chunk_state(registry, chunk_position) {
+                Some(ChunkState::Active { chunk, .. }) => chunk,
+                _ => continue,
+            };
+            chunk.get_mut(chunk.linearize(local_position)).block = *block;
+            modified_chunks.insert(chunk_position);
+        }
+        let mut update_mesh = HashSet::new();
+        for position in modified_chunks {
+            let Some(mut chunk) = self.get_chunk(registry, position, |s| matches!(s, ChunkState::Active { .. })) else {
+                continue;
+            };
+            for i in 0..CHUNK_SIZE {
+                let mask_overlay = calc_block_visible_mask_inside_structure(chunk, i);
+                    chunk.get_mut(i).visible_mask = mask_overlay;
+            }
+            update_mesh.insert(position);
+            neighbors(position, |neighbor, dir, dimension, normal| {
+                let (mut neighbor_chunk, active) = match self.get_chunk_state(registry, position) {
+                    Some(ChunkState::Stasis { chunk, .. }) => (chunk, false),
+                    Some(ChunkState::Active { chunk, .. }) => (chunk, true),
+                    _ => return,
                 };
-            }
-            for e in remove_place {
-                registry.remove::<Place>(e);
-            }
-            for e in remove_break {
-                registry.remove::<Break>(e);
-            } }*/
+
+                let changed = calc_block_visible_mask_between_chunks(
+                    &mut chunk,
+                    &mut neighbor_chunk,
+                    dir,
+                    dimension,
+                    normal,
+                );
+                if changed && active {
+                    update_mesh.insert(neighbor);
+                }
+            });
+        }
+        for position in update_mesh {
+            use ChunkState::*;
+            match self.get_chunk_state(registry, position) {
+                Some(Active { dirty, .. }) => *dirty = true,
+                _ => {}
+            };
+        }
+        for e in remove_place {
+            registry.remove::<Place>(e);
+        }
+        for e in remove_break {
+            registry.remove::<Break>(e);
+        } }*/
     }
 
     pub fn display(&mut self, registry: &mut Registry) {
@@ -236,7 +363,50 @@ impl World {
         for entity in activate {
             registry.remove::<Stasis>(entity);
             registry.insert(entity, Active);
+
+            let mut unique = false;
+            let chunk = registry.get::<Chunk>(entity).unwrap();
+            for i in 0..CHUNK_SIZE {
+                if chunk.get(i).visible_mask != 0xFF {
+                    unique = true;
+                    break;
+                }
+            }
+            if !unique {
+                continue;
+            }
             registry.insert(entity, Dirty);
+            registry.insert(
+                entity,
+                Lod(
+                    (translation_f.metric_distance(&registry.get::<Translation>(entity).unwrap().0)
+                        / 128.0) as u8,
+                ),
+            );
+            registry.insert(entity, NeedsAoBorderCalc);
+        }
+        let mut remove_ao_calc = HashSet::new();
+        'a: for (entity, _) in <(Entity, &NeedsAoBorderCalc)>::query(registry) {
+            let position = self.mapping[&entity];
+            for x in -1..=1 {
+                for y in -1..=1 {
+                    for z in -1..=1 {
+                        let off = SVector::<isize, 3>::new(x, y, z);
+                        let position = position + off;
+                        if !self.loaded.contains(&position)
+                            || registry.get::<Generating>(self.chunks[&position]).is_some()
+                        {
+                            continue 'a;
+                        }
+                    }
+                }
+            }
+
+            calc_and_set_ambient_between_chunk_neighbors(registry, &self.chunks, position);
+            remove_ao_calc.insert(entity);
+        }
+        for entity in remove_ao_calc {
+            registry.remove::<NeedsAoBorderCalc>(entity);
         }
         /*let mut activate = HashSet::new();
         let mut iter = self
@@ -294,8 +464,7 @@ impl World {
 
             let chunk_translation = translation / CHUNK_AXIS as isize;
 
-            if last_translation_f.metric_distance(&translation_f) >= *load_distance as f32 / 4.0
-            {
+            if last_translation_f.metric_distance(&translation_f) >= *load_distance as f32 / 4.0 {
                 *last_translation_f = *translation_f;
                 let side_length = 2 * *load_distance + 1;
                 let total_chunks = side_length * side_length * side_length;
@@ -346,12 +515,18 @@ impl World {
 
             let entity = registry.spawn();
             {
-                registry.insert(entity, Translation(nalgebra::convert::<_, SVector<f32, 3>>(position) * CHUNK_AXIS as f32));
+                registry.insert(
+                    entity,
+                    Translation(
+                        nalgebra::convert::<_, SVector<f32, 3>>(position) * CHUNK_AXIS as f32,
+                    ),
+                );
                 registry.insert(entity, Chunk::default());
                 registry.insert(entity, Neighbors(0));
                 registry.insert(entity, Generating);
             }
             self.chunks.insert(position, entity);
+            self.mapping.insert(entity, position);
             self.loaded.insert(position);
         }
 

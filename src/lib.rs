@@ -20,8 +20,8 @@ use world::{
 };
 
 use crate::world::{
-    entity::{Break, Look, Main, Observer, Place, Translation},
     block::Block,
+    entity::{Look, Main, Observer, Change, Translation},
 };
 
 pub struct EventLoop(pub winit::event_loop::EventLoop<()>);
@@ -81,11 +81,11 @@ pub fn main() {
         registry.insert(entity, Translation(SVector::<f32, 3>::new(0.0, 0.0, 20.0)));
         registry.insert(entity, Look::default());
         registry.insert(entity, Input::default());
-        registry.insert(entity, Observer { view_distance: 48 });
+        registry.insert(entity, Observer { view_distance: 8 });
         registry.insert(
             entity,
             Loader {
-                load_distance: 48,
+                load_distance: 8,
                 last_translation_f: SVector::<f32, 3>::new(f32::MAX, f32::MAX, f32::MAX),
                 recalculate_needed_chunks: false,
                 chunk_needed_iter: Box::new(0..0),
@@ -177,12 +177,12 @@ pub fn main() {
                 match (state, button) {
                     (ElementState::Pressed, MouseButton::Left) => {
                         if let Some((e, _)) = <(Entity, &Main)>::query(&mut registry).next() {
-                            registry.insert(e, Place(Block::Machine));
+                            registry.insert(e, Change::Place(Block::Machine));
                         }
                     }
                     (ElementState::Pressed, MouseButton::Right) => {
                         if let Some((e, _)) = <(Entity, &Main)>::query(&mut registry).next() {
-                            registry.insert(e, Break(Block::Air));
+                            registry.insert(e, Change::Break(Block::Air));
                         }
                     }
                     _ => {}
@@ -231,8 +231,7 @@ pub fn main() {
 
                 const SENSITIVITY: f32 = 2e-3;
                 use band::*;
-                if let Some((input, _)) = <(&mut Input, &Main)>::query(&mut registry).next()
-                {
+                if let Some((input, _)) = <(&mut Input, &Main)>::query(&mut registry).next() {
                     *input = Input {
                         gaze: SENSITIVITY * -cursor_movement,
                         ..observer_input

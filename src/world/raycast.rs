@@ -1,25 +1,34 @@
 use std::ops::Rem;
 
+use band::*;
 use nalgebra::SVector;
+use std::collections::HashMap;
 
 use super::{
+    block::Block,
     structure::{Structure, CHUNK_AXIS},
-    Chunk,  World, CHUNK_SIZE, block::Block,
+    Chunk, World, CHUNK_SIZE,
 };
 
-#[derive(Clone, Debug)]
-pub struct Descriptor {
+#[derive(Clone)]
+pub struct Descriptor<'a> {
     pub origin: SVector<f32, 3>,
     pub direction: SVector<f32, 3>,
     pub minimum: SVector<isize, 3>,
     pub maximum: SVector<isize, 3>,
     pub max_distance: f32,
+    pub chunks: &'a HashMap<SVector<isize, 3>, Entity>,
+    pub registry: &'a Registry,
 }
 
-#[derive(Clone, Debug)]
-pub enum State {
+#[derive(Clone)]
+pub enum State<'a> {
     Traversal {
-        position: SVector<isize, 3>,
+        chunks: &'a HashMap<SVector<isize, 3>, Entity>,
+        registry: &'a Registry,
+        world_position: SVector<isize, 3>,
+        chunk_position: SVector<isize, 3>,
+        chunk_reference: &'a Chunk,
         distance: f32,
         mask: SVector<bool, 3>,
         side_dist: SVector<f32, 3>,
@@ -31,18 +40,28 @@ pub enum State {
     OutOfBounds,
     MaxDistReached,
     MaxStepReached,
-    BlockFound(Block, Box<State>),
+    BlockFound(Block, Box<State<'a>>),
 }
 
-impl From<Descriptor> for State {
-    fn from(mut desc: Descriptor) -> Self {
+impl<'a> From<Descriptor<'a>> for State<'a> {
+    fn from(mut desc: Descriptor<'a>) -> Self {
         desc.direction = desc.direction.normalize();
+        let world_position = SVector::<isize, 3>::new(
+            f32::floor(desc.origin.x) as isize,
+            f32::floor(desc.origin.y) as isize,
+            f32::floor(desc.origin.z) as isize,
+        );
+        let chunk_position = SVector::<isize, 3>::new(
+            world_position.x.div_euclid(CHUNK_AXIS as _) as _,
+            world_position.y.div_euclid(CHUNK_AXIS as _) as _,
+            world_position.z.div_euclid(CHUNK_AXIS as _) as _,
+        );
         State::Traversal {
-            position: SVector::<isize, 3>::new(
-                f32::floor(desc.origin.x) as isize,
-                f32::floor(desc.origin.y) as isize,
-                f32::floor(desc.origin.z) as isize,
-            ),
+            world_position,
+            chunk_position,
+            chunk_reference: desc.registry.get(desc.chunks[&chunk_position]).unwrap(),
+            chunks: desc.chunks,
+            registry: desc.registry,
             distance: 0.0,
             mask: SVector::<bool, 3>::new(false, false, false),
             side_dist: SVector::<f32, 3>::new(
@@ -77,10 +96,10 @@ impl From<Descriptor> for State {
     }
 }
 
-#[derive(Clone, Debug)]
-pub struct Ray {
-    pub descriptor: Descriptor,
-    pub state: State,
+#[derive(Clone)]
+pub struct Ray<'a> {
+    pub descriptor: Descriptor<'a>,
+    pub state: State<'a>,
 }
 
 pub struct Hit {
@@ -101,13 +120,17 @@ pub fn start(descriptor: Descriptor) -> Ray {
     }
 }
 
-pub fn drive<'a>(world: &World, ray: &'a mut Ray) -> &'a mut Ray {
+pub fn drive<'a, 'b: 'a>(world: &World, ray: &'a mut Ray<'b>) -> &'a mut Ray<'b> {
     //checks
     {
         let State::Traversal {
-            position,
+            world_position: position,
             step_count,
             distance,
+            chunks,
+            registry,
+            mut chunk_position,
+            mut chunk_reference,
             ..
         } = ray.state else {
             return ray;
@@ -129,40 +152,41 @@ pub fn drive<'a>(world: &World, ray: &'a mut Ray) -> &'a mut Ray {
                 (position.y as isize).div_euclid(i_chunk_size.y),
                 (position.z as isize).div_euclid(i_chunk_size.z),
             );
-            /*
-            let mut chunk = match world.chunks.get(&translation_chunk) {
-                Some(ChunkState::Active { chunk, .. }) => chunk,
-                _ => {
-                    ray.state = State::OutOfBounds;
-                    return ray;
-                }
-            };
+
+            if translation_chunk != chunk_position {
+                chunk_position = translation_chunk;
+                chunk_reference = registry.get(chunks[&chunk_position]).unwrap();
+            }
+
             let mut local_position = SVector::<usize, 3>::new(
                 (position.x as usize).rem_euclid(i_chunk_size.x as usize) as usize,
                 (position.y as usize).rem_euclid(i_chunk_size.y as usize) as usize,
                 (position.z as usize).rem_euclid(i_chunk_size.z as usize) as usize,
             );
 
-            match chunk.get(chunk.linearize(local_position)).block {
+            match chunk_reference
+                .get(chunk_reference.linearize(local_position))
+                .block
+            {
                 Block::Air => {}
                 block => {
                     ray.state = State::BlockFound(block, Box::new(ray.state.clone()));
                 }
                 _ => {}
-            }*/
+            }
         }
     }
 
     //step
     {
         let State::Traversal {
-                position,
+                world_position: position,
                 distance,
                 mask,
                 side_dist,
                 delta_dist,
                 ray_step,
-                step_count,
+                step_count, ..
             } = &mut ray.state else {
                 return ray;
             };
@@ -203,7 +227,7 @@ pub fn hit(ray: Ray) -> Option<Hit> {
         None?
     };
 
-    let State::Traversal { position, ray_step, mask,  .. } = *prev_state else {
+    let State::Traversal { world_position: position, ray_step, mask,  .. } = *prev_state else {
         None?
     };
 

@@ -1,5 +1,6 @@
 use std::{cell::RefCell, collections::HashMap};
 
+use band::{Entity, Registry};
 use nalgebra::SVector;
 use noise::{Fbm, Simplex};
 use strum::IntoEnumIterator;
@@ -7,8 +8,7 @@ use strum_macros::EnumIter;
 
 use crate::graphics::{vertex::BlockVertex, BlockMesh};
 
-use super::block::Block;
-
+use super::{block::Block, ChunkPosition};
 
 #[repr(u8)]
 #[derive(EnumIter, Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -39,6 +39,16 @@ impl Direction {
 pub struct BlockInfo {
     pub block: Block,
     pub visible_mask: u8,
+    pub ambient: [u8; 6],
+}
+
+fn unpack_ambient(dir: Direction, vertex: usize, ambient: [u8; 6]) -> SVector<f32, 4> {
+    SVector::<f32, 4>::new(
+        ((ambient[dir as u8 as usize] >> (vertex * 2)) & 3) as f32 / 3.0,
+        ((ambient[dir as u8 as usize] >> (vertex * 2)) & 3) as f32 / 3.0,
+        ((ambient[dir as u8 as usize] >> (vertex * 2)) & 3) as f32 / 3.0,
+        1.0,
+    )
 }
 
 pub const CHUNK_AXIS: usize = 32;
@@ -105,7 +115,8 @@ impl Structure for Blueprint {
                 pos,
                 BlockInfo {
                     block: Block::Air,
-                    visible_mask: 0,
+                    visible_mask: 0xFF,
+                    ambient: [0xFF; 6],
                 },
             );
         }
@@ -129,6 +140,7 @@ impl Default for Chunk {
                 BlockInfo {
                     block: Block::Air,
                     visible_mask: 0xFF,
+                    ambient: [0xFF; 6]
                 };
                 CHUNK_SIZE
             ],
@@ -199,7 +211,7 @@ pub fn calc_block_visible_mask_inside_structure<S: Structure>(s: &S, i: usize) -
     let mut mask = 0xFF;
     inner_neighbors(s.delinearize(i), s.axis(), |neighbor, dir| {
         let j = s.linearize(neighbor);
-        if s.contains(j){
+        if s.contains(j) {
             if s.get(j).block.is_opaque() {
                 mask &= !(1 << dir as u8);
             } else {
@@ -208,6 +220,164 @@ pub fn calc_block_visible_mask_inside_structure<S: Structure>(s: &S, i: usize) -
         }
     });
     mask
+}
+
+fn vertex_ao(a: usize, b: usize, c: usize) -> usize {
+    a + b + usize::max(c, a * b)
+}
+
+fn voxel_ao<F: Fn(SVector<isize, 3>) -> bool>(
+    position: SVector<isize, 3>,
+    d1: SVector<isize, 3>,
+    d2: SVector<isize, 3>,
+    voxel_present: F,
+) -> SVector<u8, 4> {
+    let side = SVector::<i32, 4>::new(
+        voxel_present(position + d1) as i32,
+        voxel_present(position + d2) as i32,
+        voxel_present(position - d1) as i32,
+        voxel_present(position - d2) as i32,
+    );
+
+    let corner = SVector::<i32, 4>::new(
+        voxel_present(position + d1 + d2) as i32,
+        voxel_present(position - d1 + d2) as i32,
+        voxel_present(position - d1 - d2) as i32,
+        voxel_present(position + d1 - d2) as i32,
+    );
+
+    SVector::<u8, 4>::new(
+        vertex_ao(side.x as _, side.y as _, corner.x as _) as _,
+        vertex_ao(side.y as _, side.z as _, corner.y as _) as _,
+        vertex_ao(side.z as _, side.w as _, corner.z as _) as _,
+        vertex_ao(side.w as _, side.x as _, corner.w as _) as _,
+    )
+}
+
+pub fn calc_ambient_inside_chunk(s: &Chunk, i: usize) -> [u8; 6] {
+    let mut ambient_values = [0xFF; 6];
+    inner_neighbors(s.delinearize(i), s.axis(), |neighbor, dir| {
+        let neighbor = nalgebra::convert::<_, SVector<isize, 3>>(neighbor);
+        let position = nalgebra::convert::<_, SVector<isize, 3>>(s.delinearize(i));
+        let normal = neighbor - position;
+        let ambient_data = (voxel_ao)(
+            position + normal,
+            SVector::<isize, 3>::new(normal.z, normal.x, normal.y),
+            SVector::<isize, 3>::new(normal.y, normal.z, normal.x),
+            |position| {
+                let outside = position[0] < 0
+                    || position[1] < 0
+                    || position[2] < 0
+                    || position[0] >= CHUNK_AXIS as _
+                    || position[1] >= CHUNK_AXIS as _
+                    || position[2] >= CHUNK_AXIS as _;
+
+                let position = nalgebra::try_convert::<_, SVector<usize, 3>>(position).unwrap();
+                !outside && s.get(s.linearize(position)).block.is_opaque()
+            },
+        );
+        ambient_values[dir as u8 as usize] = (3 - ambient_data.x)
+            | (3 - ambient_data.y) << 2
+            | (3 - ambient_data.z) << 4
+            | (3 - ambient_data.w) << 6;
+    });
+    ambient_values
+}
+
+pub fn calc_and_set_ambient_between_chunk_neighbors(
+    registry: &mut Registry,
+    chunks: &HashMap<ChunkPosition, Entity>,
+    target: ChunkPosition,
+) {
+    let min = target - ChunkPosition::new(1, 1, 1);
+    let mut chunk_refs = Vec::<&Chunk>::with_capacity(27);
+    for i in 0..27 {
+        let x;
+        let y;
+        let z;
+        {
+            let mut idx = i;
+            z = idx / 9;
+            idx -= z * 9;
+            y = idx / 3;
+            x = idx % 3;
+        }
+        let pos = min + ChunkPosition::new(x as _, y as _, z as _);
+        chunk_refs.push(registry.get::<Chunk>(chunks[&pos]).unwrap());
+    }
+    let mut all_ambient_values = Vec::<Option<[Option<u8>; 6]>>::with_capacity(CHUNK_SIZE);
+    for i in 0..CHUNK_SIZE {
+        let cpos = chunk_refs[27 / 2].delinearize(i);
+        let x = cpos.x as usize;
+        let y = cpos.y as usize;
+        let z = cpos.z as usize;
+        if x != 0
+            && x != CHUNK_AXIS - 1
+            && y != 0
+            && y != CHUNK_AXIS - 1
+            && z != 0
+            && z != CHUNK_AXIS - 1
+        {
+            all_ambient_values.push(None);
+            continue;
+        }
+        let position =
+            SVector::<isize, 3>::new(x as _, y as _, z as _) + target * CHUNK_AXIS as isize;
+        let mut values = [None; 6];
+        let mut dir_iter = Direction::iter();
+        for d in 0..3 {
+            for n in (-1..=1).step_by(2) {
+                let dir = dir_iter.next().unwrap();
+                let mut normal = SVector::<isize, 3>::new(0, 0, 0);
+                normal[d] = n;
+
+                let ambient_data = (voxel_ao)(
+                    position + normal,
+                    SVector::<isize, 3>::new(normal.z, normal.x, normal.y),
+                    SVector::<isize, 3>::new(normal.y, normal.z, normal.x),
+                    |position| {
+                        let chunk_position = SVector::<isize, 3>::new(
+                            position.x.div_euclid(CHUNK_AXIS as _) as isize,
+                            position.y.div_euclid(CHUNK_AXIS as _) as isize,
+                            position.z.div_euclid(CHUNK_AXIS as _) as isize,
+                        );
+                        let local_position = SVector::<usize, 3>::new(
+                            position.x.rem_euclid(CHUNK_AXIS as _) as usize,
+                            position.y.rem_euclid(CHUNK_AXIS as _) as usize,
+                            position.z.rem_euclid(CHUNK_AXIS as _) as usize,
+                        );
+                        let diff = chunk_position - min;
+                        let i = (diff.z as usize * 3 + diff.y as usize) * 3 + diff.x as usize;
+                        let chunk = chunk_refs[i];
+                        chunk.get(chunk.linearize(local_position)).block.is_opaque()
+                    },
+                );
+
+                let value = (3 - ambient_data.x)
+                    | (3 - ambient_data.y) << 2
+                    | (3 - ambient_data.z) << 4
+                    | (3 - ambient_data.w) << 6;
+                values[dir as u8 as usize] = Some(value);
+            }
+        }
+        all_ambient_values.push(Some(values));
+    }
+    drop(chunk_refs);
+    let chunk = registry.get_mut::<Chunk>(chunks[&target]).unwrap();
+    for (i, values) in all_ambient_values
+        .into_iter()
+        .enumerate()
+        .filter(|(_, v)| v.is_some())
+    {
+        for (j, value) in values
+            .unwrap()
+            .into_iter()
+            .enumerate()
+            .filter(|(_, v)| v.is_some())
+        {
+            chunk.get_mut(i).ambient[j] = value.unwrap();
+        }
+    }
 }
 
 pub fn calc_block_visible_mask_between_chunks(
@@ -234,10 +404,12 @@ pub fn calc_block_visible_mask_between_chunks(
             let BlockInfo {
                 block: my_block,
                 visible_mask: my_visible_mask,
+                ..
             } = chunk.get_mut(chunk.linearize(my_block_position));
             let BlockInfo {
                 block: their_block,
                 visible_mask: their_visible_mask,
+                ..
             } = neighbor.get_mut(neighbor.linearize(their_block_position));
 
             let my_visible_mask_reference = *my_visible_mask;
@@ -370,7 +542,9 @@ pub fn gen_chunk(position: SVector<isize, 3>) -> Chunk {
 
     for i in 0..CHUNK_SIZE {
         let mask = calc_block_visible_mask_inside_structure(&chunk, i);
+        let ambient = calc_ambient_inside_chunk(&chunk, i);
         chunk.get_mut(i).visible_mask = mask;
+        chunk.get_mut(i).ambient = ambient;
     }
     chunk
 }
@@ -402,38 +576,51 @@ pub fn cubic_block<F: Fn(Block, Direction) -> Option<u32> + Copy>(
         [0, 1, 2, 3],
     ];
 
+    let norm_eq = |dir: Direction, i: usize| -> usize {
+        use Direction::*;
+        (match dir {
+            Back => [1, 2, 3, 0],
+            Forward => [2, 1, 3, 0],
+            Left => [1, 0, 3, 2],
+            Right => [0, 1, 2, 3],
+            Up => [2, 1, 0, 3],
+            //todo
+            Down => [0, 3, 1, 2],
+            _ => panic!("yo"),
+        })[i]
+    };
+
     for (i, dir) in Direction::iter().enumerate() {
         if ((info.visible_mask >> dir as u8) & 1) == 1 {
             let block_vertex_count = block_vertices.len() as u32;
-            let tint = SVector::<f32, 4>::new(1.0, 1.0, 1.0, 1.0);
             block_vertices.extend([
                 BlockVertex::new(
                     VERTEX_OFFSETS[VERTEX_SIDE_ORDER[i][0]] + position,
                     SVector::<f32, 2>::new(0.0, 0.0),
                     dir as u8,
                     (block_mapping)(info.block, dir).unwrap_or_default(),
-                    tint,
+                    unpack_ambient(dir, (norm_eq)(dir.opposite(), 0), info.ambient),
                 ),
                 BlockVertex::new(
                     VERTEX_OFFSETS[VERTEX_SIDE_ORDER[i][1]] + position,
                     SVector::<f32, 2>::new(0.0, 1.0),
                     dir as u8,
                     (block_mapping)(info.block, dir).unwrap_or_default(),
-                    tint,
+                    unpack_ambient(dir, (norm_eq)(dir.opposite(), 1), info.ambient),
                 ),
                 BlockVertex::new(
                     VERTEX_OFFSETS[VERTEX_SIDE_ORDER[i][2]] + position,
                     SVector::<f32, 2>::new(1.0, 1.0),
                     dir as u8,
                     (block_mapping)(info.block, dir).unwrap_or_default(),
-                    tint,
+                    unpack_ambient(dir, (norm_eq)(dir.opposite(), 2), info.ambient),
                 ),
                 BlockVertex::new(
                     VERTEX_OFFSETS[VERTEX_SIDE_ORDER[i][3]] + position,
                     SVector::<f32, 2>::new(1.0, 0.0),
                     dir as u8,
                     (block_mapping)(info.block, dir).unwrap_or_default(),
-                    tint,
+                    unpack_ambient(dir, (norm_eq)(dir.opposite(), 3), info.ambient),
                 ),
             ]);
 
