@@ -21,7 +21,7 @@ use world::{
 
 use crate::world::{
     block::Block,
-    entity::{Look, Main, Observer, Change, Translation},
+    entity::{Change, Look, Main, Observer, Translation},
 };
 
 pub struct EventLoop(pub winit::event_loop::EventLoop<()>);
