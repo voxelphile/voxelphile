@@ -44,11 +44,12 @@ layout(location = 2) out flat uint mapping;
 layout(location = 3) out vec4 tint;
 layout(location = 4) out flat ivec3 normal;
 
-void unpack(uvec4 data, out vec4 position, out vec2 uv, out uint dir, out uint mapping, out vec4 tint) {
+void unpack(uvec4 data, out vec4 position, out uint lod, out vec2 uv, out uint dir, out uint mapping, out vec4 tint) {
     position.x = float((data.x >> 16) & 0xFF);
     position.y = float((data.x >> 8) & 0xFF);
     position.z = float((data.x) & 0xFF);
     position.w = 1.0;
+    lod = (data.x >> 24) & 0xFF;
 
     uv = vec2(float((data.y >> 16) & 0xFFFF) / float(0xFFFF), float(data.y & 0xFFFF) / float(0xFFFF));
 
@@ -65,8 +66,9 @@ void main() {
     Vertex vertex = vertices[indices[gl_VertexIndex]];
 
     uint dir;
-    unpack(vertex.data, position, uv, dir, mapping, tint);
-
+    uint lod;
+    unpack(vertex.data, position, lod, uv, dir, mapping, tint);
+    uv *= float(lod);
     if(dir == 0) {
         normal = ivec3(1,0,0);
     }
@@ -108,7 +110,7 @@ layout(location = 2) out vec4 norm;
 void main() { 
     vec2 tex_pos_id = vec2(mapping % ATLAS_AXIS, mapping / ATLAS_AXIS);
 
-    vec2 uvs = tex_pos_id + uv;
+    vec2 uvs = tex_pos_id + mod(uv, 1);
 
     vec2 dx = dFdx(uvs) * 0.25;
     vec2 dy = dFdy(uvs) * 0.25;

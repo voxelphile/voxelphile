@@ -81,11 +81,11 @@ pub fn main() {
         registry.insert(entity, Translation(SVector::<f32, 3>::new(0.0, 0.0, 20.0)));
         registry.insert(entity, Look::default());
         registry.insert(entity, Input::default());
-        registry.insert(entity, Observer { view_distance: 8 });
+        registry.insert(entity, Observer { view_distance: 48 });
         registry.insert(
             entity,
             Loader {
-                load_distance: 8,
+                load_distance: 48,
                 last_translation_f: SVector::<f32, 3>::new(f32::MAX, f32::MAX, f32::MAX),
                 recalculate_needed_chunks: false,
                 chunk_needed_iter: Box::new(0..0),

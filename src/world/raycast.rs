@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use super::{
     block::Block,
     structure::{Structure, CHUNK_AXIS},
-    Chunk, World, CHUNK_SIZE,
+    Chunk, World,
 };
 
 #[derive(Clone)]
@@ -157,11 +157,11 @@ pub fn drive<'a, 'b: 'a>(world: &World, ray: &'a mut Ray<'b>) -> &'a mut Ray<'b>
                 chunk_position = translation_chunk;
                 chunk_reference = registry.get(chunks[&chunk_position]).unwrap();
             }
-
+            let position2 = position / chunk_reference.lod() as isize;
             let mut local_position = SVector::<usize, 3>::new(
-                (position.x as usize).rem_euclid(i_chunk_size.x as usize) as usize,
-                (position.y as usize).rem_euclid(i_chunk_size.y as usize) as usize,
-                (position.z as usize).rem_euclid(i_chunk_size.z as usize) as usize,
+                (position2.x as usize).rem_euclid(chunk_reference.axis().x as usize) as usize,
+                (position2.y as usize).rem_euclid(chunk_reference.axis().y as usize) as usize,
+                (position2.z as usize).rem_euclid(chunk_reference.axis().z as usize) as usize,
             );
 
             match chunk_reference
@@ -227,7 +227,7 @@ pub fn hit(ray: Ray) -> Option<Hit> {
         None?
     };
 
-    let State::Traversal { world_position: position, ray_step, mask,  .. } = *prev_state else {
+    let State::Traversal { world_position: position, ray_step, mask, registry, chunks, .. } = *prev_state else {
         None?
     };
 
@@ -238,34 +238,51 @@ pub fn hit(ray: Ray) -> Option<Hit> {
             mask.z as isize * ray_step.z,
         );
 
+    let i_chunk_position = SVector::<isize, 3>::new(
+        (position.x as isize).div_euclid(CHUNK_AXIS as _),
+        (position.y as isize).div_euclid(CHUNK_AXIS as _),
+        (position.z as isize).div_euclid(CHUNK_AXIS as _),
+    );
+
+    let i_chunk = registry.get::<Chunk>(*chunks.get(&i_chunk_position).unwrap()).unwrap();
+
     let i_chunk_size = SVector::<isize, 3>::new(
-        CHUNK_AXIS as isize,
-        CHUNK_AXIS as isize,
-        CHUNK_AXIS as isize,
+        i_chunk.axis().x as isize,
+        i_chunk.axis().x as isize,
+        i_chunk.axis().x as isize,
+    );
+    
+    let i_position = position / i_chunk.lod() as isize;
+
+    let i_local_position = SVector::<usize, 3>::new(
+        (i_position.x as isize).rem_euclid(i_chunk_size.x) as usize,
+        (i_position.y as isize).rem_euclid(i_chunk_size.y) as usize,
+        (i_position.z as isize).rem_euclid(i_chunk_size.z) as usize,
     );
 
-    let chunk_position = SVector::<isize, 3>::new(
-        (position.x as isize).div_euclid(i_chunk_size.x),
-        (position.y as isize).div_euclid(i_chunk_size.y),
-        (position.z as isize).div_euclid(i_chunk_size.z),
+   
+    let b_chunk_position = SVector::<isize, 3>::new(
+        (back_step.x as isize).div_euclid(CHUNK_AXIS as _),
+        (back_step.y as isize).div_euclid(CHUNK_AXIS as _),
+        (back_step.z as isize).div_euclid(CHUNK_AXIS as _),
     );
 
-    let local_position = SVector::<usize, 3>::new(
-        (position.x as isize).rem_euclid(i_chunk_size.x) as usize,
-        (position.y as isize).rem_euclid(i_chunk_size.y) as usize,
-        (position.z as isize).rem_euclid(i_chunk_size.z) as usize,
+    let b_chunk = registry.get::<Chunk>(*chunks.get(&i_chunk_position).unwrap()).unwrap();
+
+    let b_chunk_size = SVector::<isize, 3>::new(
+        b_chunk.axis().x as isize,
+        b_chunk.axis().x as isize,
+        b_chunk.axis().x as isize,
     );
-    let back_step_chunk_position = SVector::<isize, 3>::new(
-        (back_step.x as isize).div_euclid(i_chunk_size.x),
-        (back_step.y as isize).div_euclid(i_chunk_size.y),
-        (back_step.z as isize).div_euclid(i_chunk_size.z),
+    
+    let b_position = back_step / b_chunk.lod() as isize;
+
+    let b_local_position = SVector::<usize, 3>::new(
+        (b_position.x as isize).rem_euclid(b_chunk_size.x) as usize,
+        (b_position.y as isize).rem_euclid(b_chunk_size.y) as usize,
+        (b_position.z as isize).rem_euclid(b_chunk_size.z) as usize,
     );
 
-    let back_step_local_position = SVector::<usize, 3>::new(
-        (back_step.x as isize).rem_euclid(i_chunk_size.x) as usize,
-        (back_step.y as isize).rem_euclid(i_chunk_size.y) as usize,
-        (back_step.z as isize).rem_euclid(i_chunk_size.z) as usize,
-    );
     let normal = SVector::<f32, 3>::new(
         mask.x as isize as f32 * f32::signum(-ray.descriptor.direction.x),
         mask.y as isize as f32 * f32::signum(-ray.descriptor.direction.y),
@@ -275,12 +292,12 @@ pub fn hit(ray: Ray) -> Option<Hit> {
 
     Some(Hit {
         back_step,
-        back_step_chunk_position,
-        back_step_local_position,
+        back_step_chunk_position: b_chunk_position,
+        back_step_local_position: b_local_position,
         block,
         position,
         normal,
-        local_position,
-        chunk_position,
+        local_position: i_local_position,
+        chunk_position: i_chunk_position,
     })
 }

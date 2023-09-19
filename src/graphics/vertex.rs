@@ -16,6 +16,7 @@ pub struct BlockVertex {
 impl BlockVertex {
     pub fn new(
         position: SVector<usize, 3>,
+        lod: usize,
         uv: SVector<f32, 2>,
         direction: u8,
         mapping: u32,
@@ -25,7 +26,8 @@ impl BlockVertex {
 
         data.x = ((position.x as u32 & 0xFF) << 16)
             | ((position.y as u32 & 0xFF) << 8)
-            | ((position.z as u32) & 0xFF);
+            | ((position.z as u32) & 0xFF)
+            | ((lod as u32) << 24);
         data.y = (((uv.x * 0xFFFF as f32) as u32) << 16) | ((uv.y * 0xFFFF as f32) as u32);
         data.z = ((direction as u32) << 24) | ((mapping as u32) & 0xFFFFFF);
         tint *= 255.0;

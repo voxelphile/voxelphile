@@ -28,7 +28,7 @@ use self::raycast::Ray;
 use self::structure::{
     calc_and_set_ambient_between_chunk_neighbors, calc_block_visible_mask_between_chunks,
     calc_block_visible_mask_inside_structure, gen_block_mesh, gen_chunk, neighbors, BlockInfo,
-    Structure, CHUNK_AXIS, CHUNK_SIZE,
+    Structure, CHUNK_AXIS,
 };
 
 pub struct Neighbors(u8);
@@ -81,24 +81,25 @@ impl World {
 
     pub fn set_blocks(&mut self, registry: &mut Registry, blocks: &[(WorldPosition, Block)]) {
         let mut modified_chunks = HashSet::<SVector<isize, 3>>::new();
-        let mut set_block_in_chunk = HashMap::<ChunkPosition, Vec<(LocalPosition, Block)>>::new();
+        let mut set_block_in_chunk = HashMap::<ChunkPosition, Vec<(WorldPosition, Block)>>::new();
         for (target_position, block) in blocks {
             let chunk_position = SVector::<isize, 3>::new(
                 target_position.x.div_euclid(CHUNK_AXIS as isize),
                 target_position.y.div_euclid(CHUNK_AXIS as isize),
                 target_position.z.div_euclid(CHUNK_AXIS as isize),
             );
-            let local_position = SVector::<usize, 3>::new(
-                target_position.x.rem_euclid(CHUNK_AXIS as isize) as usize,
-                target_position.y.rem_euclid(CHUNK_AXIS as isize) as usize,
-                target_position.z.rem_euclid(CHUNK_AXIS as isize) as usize,
-            );
 
-            set_block_in_chunk.entry(chunk_position).or_default().push((local_position, *block));
+            set_block_in_chunk.entry(chunk_position).or_default().push((*target_position, *block));
         }
         for (chunk_position, blocks_at_position) in set_block_in_chunk {
             let chunk = registry.get_mut::<Chunk>(self.chunks[&chunk_position]).unwrap();
-            for (local_position, block) in blocks_at_position {
+            for (mut target_position, block) in blocks_at_position {
+                target_position /= chunk.lod() as isize;
+                let local_position = SVector::<usize, 3>::new(
+                    target_position.x.rem_euclid(chunk.axis().x as isize) as usize,
+                    target_position.y.rem_euclid(chunk.axis().y as isize) as usize,
+                    target_position.z.rem_euclid(chunk.axis().z as isize) as usize,
+                );
                 chunk.get_mut(chunk.linearize(local_position)).block = block;
             }
             modified_chunks.insert(chunk_position);
@@ -107,7 +108,7 @@ impl World {
         let mut needs_ao_recalc = HashSet::<SVector<isize, 3>>::new();
         for position in modified_chunks {
             let mut chunk = registry.remove::<Chunk>(self.chunks[&position]).unwrap();
-            for i in 0..CHUNK_SIZE {
+            for i in 0..Structure::size(&chunk) {
                 let mask = calc_block_visible_mask_inside_structure(&chunk, i);
                 let ambient = calc_ambient_inside_chunk(&chunk, i);
                 chunk.get_mut(i).visible_mask = mask;
@@ -255,7 +256,7 @@ impl World {
 
             let mut unique = false;
             let chunk = registry.get::<Chunk>(entity).unwrap();
-            for i in 0..CHUNK_SIZE {
+            for i in 0..Structure::size(chunk) {
                 if chunk.get(i).visible_mask != 0xFF {
                     unique = true;
                     break;
@@ -269,7 +270,7 @@ impl World {
                 entity,
                 Lod(
                     (translation_f.metric_distance(&registry.get::<Translation>(entity).unwrap().0)
-                        / 128.0) as u8,
+                        / 256.0) as u8,
                 ),
             );
             registry.insert(entity, NeedsAoBorderCalc);
@@ -291,7 +292,7 @@ impl World {
                 }
             }
 
-            calc_and_set_ambient_between_chunk_neighbors(registry, &self.chunks, position);
+            //calc_and_set_ambient_between_chunk_neighbors(registry, &self.chunks, position);
             remove_ao_calc.insert(entity);
         }
         for entity in remove_ao_calc {
@@ -299,6 +300,9 @@ impl World {
         }
     }
     pub fn load(&mut self, registry: &mut Registry) {
+        let Some((Translation(translation_f), _)) = <(&Translation, &Observer)>::query(registry).next() else {
+            return;
+        };
         for (
             Translation(translation_f),
             Loader {
@@ -358,20 +362,23 @@ impl World {
                 }
             }
         }
-        for position in self.load_chunk_order.drain(..) {
             let (pre_generator_tx, _) = &self.pre_generator;
+            for position in self.load_chunk_order.drain(..) {
 
-            let _ = pre_generator_tx.send(GenReq { position });
+            let translation = nalgebra::convert::<_, SVector<f32, 3>>(position) * CHUNK_AXIS as f32;
+            let lod = (translation_f.metric_distance(&translation) / 128.0) as usize;
+
+            let _ = pre_generator_tx.send(GenReq { position, lod });
 
             let entity = registry.spawn();
             {
                 registry.insert(
                     entity,
                     Translation(
-                        nalgebra::convert::<_, SVector<f32, 3>>(position) * CHUNK_AXIS as f32,
+                        translation,
                     ),
                 );
-                registry.insert(entity, Chunk::default());
+                registry.insert(entity, Chunk::new(lod));
                 registry.insert(entity, Neighbors(0));
                 registry.insert(entity, Generating);
             }
@@ -379,7 +386,16 @@ impl World {
             self.mapping.insert(entity, position);
             self.loaded.insert(position);
         }
-
+        for (entity, chunk, Translation(translation)) in <(Entity, &Chunk, &Translation)>::query(registry) {
+            let lod = (translation_f.metric_distance(&translation) / 128.0) as usize;
+            if chunk.lod().ilog2() as usize != lod {
+                let _ = pre_generator_tx.send(GenReq { position: SVector::<isize, 3>::new(translation.x as isize / CHUNK_AXIS as isize, translation.y as isize / CHUNK_AXIS as isize, translation.z as isize / CHUNK_AXIS as isize), lod });
+                registry.insert(entity, Generating);
+                registry.get_mut::<Neighbors>(entity).unwrap().0 = 0;
+                registry.remove::<Stasis>(entity);
+                registry.remove::<Active>(entity);
+            }
+        }
         {
             let (_, post_generator_rx) = &self.post_generator;
             while let Ok(GenResp {
@@ -400,7 +416,7 @@ impl World {
                     }
 
                     if registry.get::<Stasis>(*neighbor_entity).is_some() {
-                        registry.get_mut::<Neighbors>(*neighbor_entity).unwrap().0 += 1;
+                        registry.get_mut::<Neighbors>(*neighbor_entity).unwrap().0 = (registry.get_mut::<Neighbors>(*neighbor_entity).unwrap().0 + 1).clamp(0, 6);
                     }
 
                     neighbors_present += 1;
@@ -427,6 +443,7 @@ impl World {
 
 pub struct GenReq {
     position: SVector<isize, 3>,
+    lod: usize
 }
 
 pub struct GenResp {
@@ -436,12 +453,12 @@ pub struct GenResp {
 
 pub fn generator(post_generator_tx: Sender<GenResp>, pre_generator_rx: Receiver<GenReq>) {
     loop {
-        let Ok(GenReq { position }) = pre_generator_rx.try_recv() else {
+        let Ok(GenReq { position, lod }) = pre_generator_rx.try_recv() else {
             thread::sleep(Duration::from_millis(1));
             continue;
         };
 
-        let chunk = gen_chunk(CHUNK_AXIS as isize * position);
+        let chunk = gen_chunk(CHUNK_AXIS as isize * position, lod);
 
         let _ = post_generator_tx.send(GenResp { position, chunk });
     }

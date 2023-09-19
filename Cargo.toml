@@ -12,6 +12,8 @@ boson = ["dep:boson"]
 [build-dependencies]
 shaderc = "*"
 
+[profile.dev]
+
 [dependencies]
 boson = { path = "../boson", optional = true }
 winit = "*"

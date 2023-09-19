@@ -57,6 +57,7 @@ pub const CHUNK_SIZE: usize = CHUNK_AXIS * CHUNK_AXIS * CHUNK_AXIS;
 pub trait Structure {
     fn axis(&self) -> SVector<usize, 3>;
     fn size(&self) -> usize;
+    fn lod(&self) -> usize;
     fn contains(&self, _: usize) -> bool {
         true
     }
@@ -116,7 +117,7 @@ impl Structure for Blueprint {
                 BlockInfo {
                     block: Block::Air,
                     visible_mask: 0xFF,
-                    ambient: [0xFF; 6],
+                    ambient: [0x0; 6],
                 },
             );
         }
@@ -126,23 +127,31 @@ impl Structure for Blueprint {
         let pos = nalgebra::convert::<_, SVector<isize, 3>>(self.delinearize(i)) + self.minimum;
         self.data.contains_key(&pos)
     }
+
+    fn lod(&self) -> usize {
+        0
+    }
 }
 
 #[derive(Debug)]
 pub struct Chunk {
+    lod: usize,
     data: Vec<BlockInfo>,
 }
 
-impl Default for Chunk {
-    fn default() -> Self {
+impl Chunk {
+    pub fn new(lod: usize) -> Self {
+        let lod = lod.min(CHUNK_AXIS.ilog2() as usize);
+        let axis = SVector::<usize, 3>::new(CHUNK_AXIS, CHUNK_AXIS, CHUNK_AXIS) / 2usize.pow(lod as _) as usize;
         Self {
+            lod,
             data: vec![
                 BlockInfo {
                     block: Block::Air,
                     visible_mask: 0xFF,
-                    ambient: [0xFF; 6]
+                    ambient: [0x0; 6]
                 };
-                CHUNK_SIZE
+                axis.x * axis.y * axis.z
             ],
         }
     }
@@ -150,10 +159,13 @@ impl Default for Chunk {
 
 impl Structure for Chunk {
     fn axis(&self) -> SVector<usize, 3> {
-        SVector::<usize, 3>::new(CHUNK_AXIS, CHUNK_AXIS, CHUNK_AXIS)
+        SVector::<usize, 3>::new(CHUNK_AXIS, CHUNK_AXIS, CHUNK_AXIS) / self.lod()
     }
     fn size(&self) -> usize {
-        CHUNK_SIZE
+        self.axis().x * self.axis().y * self.axis().z
+    }
+    fn lod(&self) -> usize {
+        2usize.pow(self.lod as _) as _
     }
     fn get(&self, i: usize) -> &BlockInfo {
         &self.data[i]
@@ -268,9 +280,9 @@ pub fn calc_ambient_inside_chunk(s: &Chunk, i: usize) -> [u8; 6] {
                 let outside = position[0] < 0
                     || position[1] < 0
                     || position[2] < 0
-                    || position[0] >= CHUNK_AXIS as _
-                    || position[1] >= CHUNK_AXIS as _
-                    || position[2] >= CHUNK_AXIS as _;
+                    || position[0] >= s.axis().x as _
+                    || position[1] >= s.axis().y as _
+                    || position[2] >= s.axis().z as _;
 
                 let position = nalgebra::try_convert::<_, SVector<usize, 3>>(position).unwrap();
                 !outside && s.get(s.linearize(position)).block.is_opaque()
@@ -305,18 +317,19 @@ pub fn calc_and_set_ambient_between_chunk_neighbors(
         let pos = min + ChunkPosition::new(x as _, y as _, z as _);
         chunk_refs.push(registry.get::<Chunk>(chunks[&pos]).unwrap());
     }
-    let mut all_ambient_values = Vec::<Option<[Option<u8>; 6]>>::with_capacity(CHUNK_SIZE);
-    for i in 0..CHUNK_SIZE {
+    let target_chunk = chunk_refs[27 / 2];
+    let mut all_ambient_values = Vec::<Option<[Option<u8>; 6]>>::with_capacity(Structure::size(target_chunk));
+    for i in 0..Structure::size(target_chunk) {
         let cpos = chunk_refs[27 / 2].delinearize(i);
         let x = cpos.x as usize;
         let y = cpos.y as usize;
         let z = cpos.z as usize;
         if x != 0
-            && x != CHUNK_AXIS - 1
+            && x != target_chunk.axis().x - 1
             && y != 0
-            && y != CHUNK_AXIS - 1
+            && y != target_chunk.axis().y - 1
             && z != 0
-            && z != CHUNK_AXIS - 1
+            && z != target_chunk.axis().z - 1
         {
             all_ambient_values.push(None);
             continue;
@@ -335,20 +348,22 @@ pub fn calc_and_set_ambient_between_chunk_neighbors(
                     position + normal,
                     SVector::<isize, 3>::new(normal.z, normal.x, normal.y),
                     SVector::<isize, 3>::new(normal.y, normal.z, normal.x),
-                    |position| {
+                    |mut position| {
                         let chunk_position = SVector::<isize, 3>::new(
                             position.x.div_euclid(CHUNK_AXIS as _) as isize,
                             position.y.div_euclid(CHUNK_AXIS as _) as isize,
                             position.z.div_euclid(CHUNK_AXIS as _) as isize,
                         );
-                        let local_position = SVector::<usize, 3>::new(
-                            position.x.rem_euclid(CHUNK_AXIS as _) as usize,
-                            position.y.rem_euclid(CHUNK_AXIS as _) as usize,
-                            position.z.rem_euclid(CHUNK_AXIS as _) as usize,
-                        );
                         let diff = chunk_position - min;
                         let i = (diff.z as usize * 3 + diff.y as usize) * 3 + diff.x as usize;
                         let chunk = chunk_refs[i];
+                        
+                        position /= chunk.lod() as isize;
+                        let local_position = SVector::<usize, 3>::new(
+                            position.x.rem_euclid(chunk.axis().x as _) as usize,
+                            position.y.rem_euclid(chunk.axis().y as _) as usize,
+                            position.z.rem_euclid(chunk.axis().z as _) as usize,
+                        );
                         chunk.get(chunk.linearize(local_position)).block.is_opaque()
                     },
                 );
@@ -393,13 +408,13 @@ pub fn calc_block_visible_mask_between_chunks(
             let mut my_block_position = SVector::<usize, 3>::new(0, 0, 0);
             let mut their_block_position = SVector::<usize, 3>::new(0, 0, 0);
 
-            my_block_position[dimension] = if normal == 1 { CHUNK_AXIS - 1 } else { 0 };
-            my_block_position[(dimension + 1) % 3] = u;
-            my_block_position[(dimension + 2) % 3] = v;
+            my_block_position[dimension] = if normal == 1 { chunk.axis()[dimension] - 1 } else { 0 };
+            my_block_position[(dimension + 1) % 3] = u / chunk.lod();
+            my_block_position[(dimension + 2) % 3] = v / chunk.lod();
 
-            their_block_position[dimension] = if normal == 1 { 0 } else { CHUNK_AXIS - 1 };
-            their_block_position[(dimension + 1) % 3] = u;
-            their_block_position[(dimension + 2) % 3] = v;
+            their_block_position[dimension] = if normal == 1 { 0 } else { neighbor.axis()[dimension] - 1 };
+            their_block_position[(dimension + 1) % 3] = u / neighbor.lod();
+            their_block_position[(dimension + 2) % 3] = v / neighbor.lod();
 
             let BlockInfo {
                 block: my_block,
@@ -435,12 +450,12 @@ pub fn calc_block_visible_mask_between_chunks(
     changed
 }
 
-pub fn gen_chunk(position: SVector<isize, 3>) -> Chunk {
+pub fn gen_chunk(position: SVector<isize, 3>, lod: usize) -> Chunk {
     fn lerp3(a: f64, b: f64, c: f64, t: f64) -> f64 {
         use lerp::Lerp;
         return f64::lerp(f64::lerp(a, b, f64::min(t, 0.0) + 1.0), c, f64::max(t, 0.0));
     }
-    let mut chunk = Chunk::default();
+    let mut chunk = Chunk::new(lod);
 
     let mut alpha = Fbm::<Simplex>::new(400);
     let mut beta = Fbm::<Simplex>::new(500);
@@ -471,9 +486,9 @@ pub fn gen_chunk(position: SVector<isize, 3>) -> Chunk {
         }
     }
 
-    for i in 0..CHUNK_SIZE {
+    for i in 0..Structure::size(&chunk) {
         use lerp::Lerp;
-        let local_position = nalgebra::convert::<_, SVector<isize, 3>>(chunk.delinearize(i));
+        let local_position = nalgebra::convert::<_, SVector<isize, 3>>(chunk.delinearize(i)) * chunk.lod() as isize;
 
         let noise_interp = SVector::<f64, 3>::new(
             (local_position[0] as f64 / noise_scale[0] as f64).fract(),
@@ -540,7 +555,7 @@ pub fn gen_chunk(position: SVector<isize, 3>) -> Chunk {
         }
     }
 
-    for i in 0..CHUNK_SIZE {
+    for i in 0..Structure::size(&chunk) {
         let mask = calc_block_visible_mask_inside_structure(&chunk, i);
         let ambient = calc_ambient_inside_chunk(&chunk, i);
         chunk.get_mut(i).visible_mask = mask;
@@ -551,6 +566,7 @@ pub fn gen_chunk(position: SVector<isize, 3>) -> Chunk {
 
 pub fn cubic_block<F: Fn(Block, Direction) -> Option<u32> + Copy>(
     info: &BlockInfo,
+    lod: usize,
     position: SVector<usize, 3>,
     block_mapping: F,
     block_vertices: &mut Vec<BlockVertex>,
@@ -595,28 +611,32 @@ pub fn cubic_block<F: Fn(Block, Direction) -> Option<u32> + Copy>(
             let block_vertex_count = block_vertices.len() as u32;
             block_vertices.extend([
                 BlockVertex::new(
-                    VERTEX_OFFSETS[VERTEX_SIDE_ORDER[i][0]] + position,
+                    VERTEX_OFFSETS[VERTEX_SIDE_ORDER[i][0]] * lod + position* lod ,
+                    lod,
                     SVector::<f32, 2>::new(0.0, 0.0),
                     dir as u8,
                     (block_mapping)(info.block, dir).unwrap_or_default(),
                     unpack_ambient(dir, (norm_eq)(dir.opposite(), 0), info.ambient),
                 ),
                 BlockVertex::new(
-                    VERTEX_OFFSETS[VERTEX_SIDE_ORDER[i][1]] + position,
+                    VERTEX_OFFSETS[VERTEX_SIDE_ORDER[i][1]]* lod  + position* lod ,
+                    lod,
                     SVector::<f32, 2>::new(0.0, 1.0),
                     dir as u8,
                     (block_mapping)(info.block, dir).unwrap_or_default(),
                     unpack_ambient(dir, (norm_eq)(dir.opposite(), 1), info.ambient),
                 ),
                 BlockVertex::new(
-                    VERTEX_OFFSETS[VERTEX_SIDE_ORDER[i][2]] + position,
+                    VERTEX_OFFSETS[VERTEX_SIDE_ORDER[i][2]]* lod  + position* lod ,
+                    lod,
                     SVector::<f32, 2>::new(1.0, 1.0),
                     dir as u8,
                     (block_mapping)(info.block, dir).unwrap_or_default(),
                     unpack_ambient(dir, (norm_eq)(dir.opposite(), 2), info.ambient),
                 ),
                 BlockVertex::new(
-                    VERTEX_OFFSETS[VERTEX_SIDE_ORDER[i][3]] + position,
+                    VERTEX_OFFSETS[VERTEX_SIDE_ORDER[i][3]]* lod  + position* lod ,
+                    lod,
                     SVector::<f32, 2>::new(1.0, 0.0),
                     dir as u8,
                     (block_mapping)(info.block, dir).unwrap_or_default(),
@@ -644,9 +664,11 @@ pub fn gen_block_mesh<S: Structure, F: Fn(Block, Direction) -> Option<u32> + Cop
     let mut block_indices = vec![];
 
     s.for_each(|i, info| {
+        let p = s.delinearize(i);
         if info.block.is_opaque() {
             cubic_block(
                 info,
+                s.lod(),
                 s.delinearize(i),
                 block_mapping,
                 &mut block_vertices,
