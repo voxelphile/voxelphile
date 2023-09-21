@@ -1,12 +1,13 @@
-use std::{cell::RefCell, collections::HashMap};
+use std::{cell::RefCell, collections::HashMap, marker::PhantomData};
 
-use band::{Entity, Registry};
+use band::{Entity, Registry, QueryExt};
 use nalgebra::SVector;
 use noise::{Fbm, Simplex};
 use strum::IntoEnumIterator;
+use std::ops;
 use strum_macros::EnumIter;
 
-use crate::graphics::{vertex::BlockVertex, BlockMesh};
+use crate::{graphics::{vertex::BlockVertex, BlockMesh}, world::entity::Electric};
 
 use super::{block::Block, ChunkPosition};
 
@@ -42,6 +43,27 @@ pub struct BlockInfo {
     pub ambient: [u8; 6],
 }
 
+pub trait BlockRef {
+    fn info(&self) -> &BlockInfo;
+      
+}
+
+pub trait BlockMut {
+    fn info(&mut self) -> &mut BlockInfo;
+}
+
+impl<'a> BlockRef for &'a BlockInfo {
+    fn info(&self) -> &BlockInfo {
+        self
+    }
+}
+
+impl<'a> BlockMut for &'a mut BlockInfo {
+    fn info(&mut self) -> &mut BlockInfo {
+        self
+    }
+}
+
 fn unpack_ambient(dir: Direction, vertex: usize, ambient: [u8; 6]) -> SVector<f32, 4> {
     SVector::<f32, 4>::new(
         ((ambient[dir as u8 as usize] >> (vertex * 2)) & 3) as f32 / 3.0,
@@ -55,14 +77,16 @@ pub const CHUNK_AXIS: usize = 32;
 pub const CHUNK_SIZE: usize = CHUNK_AXIS * CHUNK_AXIS * CHUNK_AXIS;
 
 pub trait Structure {
+    type Ref<'a>: BlockRef where Self: 'a;
+    type Mut<'a>: BlockMut where Self: 'a;
     fn axis(&self) -> SVector<usize, 3>;
     fn size(&self) -> usize;
     fn lod(&self) -> usize;
     fn contains(&self, _: usize) -> bool {
         true
     }
-    fn get(&self, i: usize) -> &BlockInfo;
-    fn get_mut(&mut self, i: usize) -> &mut BlockInfo;
+    fn get<'a>(&'a self, i: usize) -> Self::Ref<'a>;
+    fn get_mut<'a>(&'a mut self, i: usize) -> Self::Mut<'a>;
     fn linearize(&self, v: SVector<usize, 3>) -> usize {
         let axis = self.axis();
         (v[2] * axis[1] + v[1]) * axis[0] + v[0]
@@ -79,12 +103,14 @@ pub trait Structure {
     }
     fn for_each<F: FnMut(usize, &BlockInfo)>(&self, mut f: F) {
         for i in 0..self.size() {
-            (f)(i, self.get(i));
+            let _ref = self.get(i);
+            (f)(i, _ref.info());
         }
     }
-    fn for_each_mut<F: FnMut(usize, &mut BlockInfo)>(&mut self, mut f: F) {
+    fn for_each_mut<'a, F: FnMut(usize, &mut BlockInfo) + 'a>(&'a mut self, mut f: F) {
         for i in 0..self.size() {
-            (f)(i, self.get_mut(i));
+            let mut _mut = self.get_mut(i);
+            (f)(i, _mut.info());
         }
     }
 }
@@ -103,13 +129,13 @@ impl Structure for Blueprint {
         let axis = self.axis();
         axis[0] * axis[1] * axis[2]
     }
-    fn get(&self, i: usize) -> &BlockInfo {
+    fn get<'a>(&'a self, i: usize) -> Self::Ref<'a> {
         let pos = nalgebra::convert::<_, SVector<isize, 3>>(self.delinearize(i)) + self.minimum;
         self.data
             .get(&pos)
             .expect("no block info entry found for position in blueprint")
     }
-    fn get_mut(&mut self, i: usize) -> &mut BlockInfo {
+    fn get_mut<'a> (&'a mut self, i: usize) -> Self::Mut<'a> {
         let pos = nalgebra::convert::<_, SVector<isize, 3>>(self.delinearize(i)) + self.minimum;
         if !self.data.contains_key(&pos) {
             self.data.insert(
@@ -131,18 +157,25 @@ impl Structure for Blueprint {
     fn lod(&self) -> usize {
         0
     }
+
+    type Ref<'a> = &'a BlockInfo;
+
+    type Mut<'a> = &'a mut BlockInfo;
 }
 
-#[derive(Debug)]
 pub struct Chunk {
     lod: usize,
     data: Vec<BlockInfo>,
+    tiles: HashMap<Entity, usize>,
+    mapping: HashMap<usize, Entity>,
+    registry: Registry,
 }
 
 impl Chunk {
     pub fn new(lod: usize) -> Self {
         let lod = lod.min(CHUNK_AXIS.ilog2() as usize);
         let axis = SVector::<usize, 3>::new(CHUNK_AXIS, CHUNK_AXIS, CHUNK_AXIS) / 2usize.pow(lod as _) as usize;
+        let registry = Registry::default();
         Self {
             lod,
             data: vec![
@@ -153,11 +186,46 @@ impl Chunk {
                 };
                 axis.x * axis.y * axis.z
             ],
+            tiles: Default::default(),
+            mapping: Default::default(),
+            registry,
+        }
+    }
+    pub fn tick(&mut self) {
+        if self.lod != 0 {
+            return;
+        }
+        for (my_entity, Electric(my_power)) in <(Entity, &mut Electric)>::query(&mut self.registry) {
+            let my_i = self.tiles[&my_entity];
+            let block = self.get(my_i).block;
+            match block {
+                Block::Machine => if *my_power > 0.0 {
+                    println!("I am powered! power: {}", my_power);
+                    *my_power -= 10.0;
+                },
+                Block::Source => {
+                    *my_power = 100.0;
+                }
+                _ => {}
+            }
+            inner_neighbors(self.delinearize(self.tiles[&my_entity]), self.axis(), |neighbor, _| {
+                let Some(&their_entity) = self.mapping.get(&self.linearize(neighbor)) else {
+                    return;
+                };
+                let Some(Electric(their_power)) = self.registry.get_mut(their_entity) else {
+                    return;
+                };
+                let avg = (*my_power + *their_power) / 2.0 - 0.01;
+                *my_power = avg.max(0.0);
+                *their_power = avg.max(0.0);
+            });
         }
     }
 }
 
-impl Structure for Chunk {
+
+
+impl Structure for Chunk  {
     fn axis(&self) -> SVector<usize, 3> {
         SVector::<usize, 3>::new(CHUNK_AXIS, CHUNK_AXIS, CHUNK_AXIS) / self.lod()
     }
@@ -167,11 +235,67 @@ impl Structure for Chunk {
     fn lod(&self) -> usize {
         2usize.pow(self.lod as _) as _
     }
-    fn get(&self, i: usize) -> &BlockInfo {
+    fn get<'a>(&'a self, i: usize) -> Self::Ref<'a> {
         &self.data[i]
     }
-    fn get_mut(&mut self, i: usize) -> &mut BlockInfo {
-        &mut self.data[i]
+    fn get_mut<'a>(&'a mut self, i: usize) -> Self::Mut<'a> {
+        Mut { id: self.data[i].block, chunk: self, i }
+    }
+
+    type Ref<'a> = &'a BlockInfo;
+
+    type Mut<'a> = Mut<'a>;
+}
+
+pub struct Mut<'a> {
+    chunk: &'a mut Chunk,
+    id: Block,
+    i: usize,
+}
+
+impl<'a> BlockMut for Mut<'a> {
+    fn info(&mut self) -> &mut BlockInfo {
+        &mut *self
+    }
+}
+
+impl<'a> ops::Deref for Mut<'a> {
+    type Target = BlockInfo;
+    fn deref(&self) -> &Self::Target {
+        &self.chunk.data[self.i]
+    }
+}
+
+impl <'a> ops::DerefMut for Mut<'a> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.chunk.data[self.i]
+    }
+}
+
+impl <'a> Drop for Mut<'a> {
+    fn drop(&mut self) {
+        let curr = self.chunk.data[self.i].block;
+        if self.id != curr {
+            if let Some(&entity) = self.chunk.mapping.get(&self.i) {
+                self.chunk.registry.despawn(entity);
+                dbg!("destroy", entity);
+                self.chunk.tiles.remove(&entity);
+                self.chunk.mapping.remove(&self.i);
+            }
+
+            use Block::*;
+            match curr {
+                Machine | Wire | Source => {
+                    let entity = self.chunk.registry.spawn();
+                    dbg!("create", entity);
+                    self.chunk.registry.insert(entity, Electric(0.0));
+
+                    self.chunk.tiles.insert(entity, self.i);
+                    self.chunk.mapping.insert(self.i, entity);
+                }
+                _ => {}
+            }
+        }
     }
 }
 
@@ -224,7 +348,7 @@ pub fn calc_block_visible_mask_inside_structure<S: Structure>(s: &S, i: usize) -
     inner_neighbors(s.delinearize(i), s.axis(), |neighbor, dir| {
         let j = s.linearize(neighbor);
         if s.contains(j) {
-            if s.get(j).block.is_opaque() {
+            if s.get(j).info().block.is_opaque() {
                 mask &= !(1 << dir as u8);
             } else {
                 mask |= 1 << dir as u8;
@@ -403,48 +527,74 @@ pub fn calc_block_visible_mask_between_chunks(
     normal: isize,
 ) -> bool {
     let mut changed = false;
-    for u in 0..CHUNK_AXIS {
-        for v in 0..CHUNK_AXIS {
+    let max_lod = chunk.lod().max(neighbor.lod());
+    let min_lod = chunk.lod().min(neighbor.lod());
+    let (small_chunk, large_chunk, same) = if chunk.lod() == min_lod {
+        (neighbor, chunk, false)
+    } else {
+        (chunk, neighbor, true)
+    };
+    
+    let (normal_eq, my_dir) = if same { (1, dir) } else { (-1, dir.opposite()) } ;
+    let their_dir = my_dir.opposite();
+
+    let ratio_lod = max_lod / min_lod;
+    for u in 0..CHUNK_AXIS / max_lod {
+        for v in 0..CHUNK_AXIS / max_lod {
             let mut my_block_position = SVector::<usize, 3>::new(0, 0, 0);
             let mut their_block_position = SVector::<usize, 3>::new(0, 0, 0);
 
-            my_block_position[dimension] = if normal == 1 { chunk.axis()[dimension] - 1 } else { 0 };
-            my_block_position[(dimension + 1) % 3] = u / chunk.lod();
-            my_block_position[(dimension + 2) % 3] = v / chunk.lod();
 
-            their_block_position[dimension] = if normal == 1 { 0 } else { neighbor.axis()[dimension] - 1 };
-            their_block_position[(dimension + 1) % 3] = u / neighbor.lod();
-            their_block_position[(dimension + 2) % 3] = v / neighbor.lod();
+            my_block_position[dimension] = if normal == normal_eq { small_chunk.axis()[dimension] - 1 } else { 0 };
+            my_block_position[(dimension + 1) % 3] = u;
+            my_block_position[(dimension + 2) % 3] = v;
+
+            their_block_position[dimension] = if normal == normal_eq { 0 } else { large_chunk.axis()[dimension] - 1 };
+            their_block_position[(dimension + 1) % 3] = u * ratio_lod;
+            their_block_position[(dimension + 2) % 3] = v * ratio_lod;
+
+            let mut my_block_ref = small_chunk.get_mut(small_chunk.linearize(my_block_position));
 
             let BlockInfo {
                 block: my_block,
                 visible_mask: my_visible_mask,
                 ..
-            } = chunk.get_mut(chunk.linearize(my_block_position));
-            let BlockInfo {
-                block: their_block,
-                visible_mask: their_visible_mask,
-                ..
-            } = neighbor.get_mut(neighbor.linearize(their_block_position));
+            } = &mut *my_block_ref;
+                        let my_visible_mask_reference = *my_visible_mask;
+                        *my_visible_mask &= !(1 << my_dir as u8);
+                        for u2 in 0..ratio_lod {
+                for v2 in 0..ratio_lod {
+                    let mut their_offset = SVector::<usize, 3>::new(0, 0, 0);
+                    
+                    their_offset[(dimension + 1) % 3] = u2;
+                    their_offset[(dimension + 2) % 3] = v2;
 
-            let my_visible_mask_reference = *my_visible_mask;
-            let their_visible_mask_reference = *their_visible_mask;
+                    let their_real_position = their_block_position + their_offset;
 
-            if my_block.is_opaque() {
-                *their_visible_mask &= !(1 << dir.opposite() as u8);
-            } else {
-                *their_visible_mask |= 1 << dir.opposite() as u8;
+                    let mut their_block_ref = large_chunk.get_mut(large_chunk.linearize(their_real_position));
+                    let BlockInfo {
+                        block: their_block,
+                        visible_mask: their_visible_mask,
+                        ..
+                    } = &mut *their_block_ref;
+        
+                    let their_visible_mask_reference = *their_visible_mask;
+        
+                    if my_block.is_opaque() {
+                        *their_visible_mask &= !(1 << their_dir as u8);
+                    } else {
+                        *their_visible_mask |= 1 << their_dir as u8;
+                    }
+        
+                    if !their_block.is_opaque() {
+                        *my_visible_mask |= 1 << my_dir as u8;
+                    }
+        
+                    changed = changed
+                        || *my_visible_mask != my_visible_mask_reference
+                        || *their_visible_mask != their_visible_mask_reference;
+                }
             }
-
-            if their_block.is_opaque() {
-                *my_visible_mask &= !(1 << dir as u8);
-            } else {
-                *my_visible_mask |= 1 << dir as u8;
-            }
-
-            changed = changed
-                || *my_visible_mask != my_visible_mask_reference
-                || *their_visible_mask != their_visible_mask_reference;
         }
     }
     changed
@@ -665,9 +815,9 @@ pub fn gen_block_mesh<S: Structure, F: Fn(Block, Direction) -> Option<u32> + Cop
 
     s.for_each(|i, info| {
         let p = s.delinearize(i);
-        if info.block.is_opaque() {
+        if info.info().block.is_opaque() {
             cubic_block(
-                info,
+                info.info(),
                 s.lod(),
                 s.delinearize(i),
                 block_mapping,

@@ -43,6 +43,8 @@ pub type ChunkPosition = SVector<isize, 3>;
 pub type LocalPosition = SVector<usize, 3>;
 pub type WorldPosition = SVector<isize, 3>;
 
+pub const LOD_VIEW_FACTOR: f32 = 256.0;
+
 pub struct World {
     chunks: HashMap<ChunkPosition, Entity>,
     mapping: HashMap<Entity, ChunkPosition>,
@@ -238,6 +240,9 @@ impl World {
                 registry.remove::<Change>(e);
             }
         }
+        for chunk in <&mut Chunk>::query(registry) {
+            chunk.tick();
+        }
     }
 
     pub fn display(&mut self, registry: &mut Registry) {
@@ -366,7 +371,7 @@ impl World {
             for position in self.load_chunk_order.drain(..) {
 
             let translation = nalgebra::convert::<_, SVector<f32, 3>>(position) * CHUNK_AXIS as f32;
-            let lod = (translation_f.metric_distance(&translation) / 128.0) as usize;
+            let lod = (translation_f.metric_distance(&translation) / LOD_VIEW_FACTOR) as usize;
 
             let _ = pre_generator_tx.send(GenReq { position, lod });
 
@@ -386,15 +391,22 @@ impl World {
             self.mapping.insert(entity, position);
             self.loaded.insert(position);
         }
-        for (entity, chunk, Translation(translation)) in <(Entity, &Chunk, &Translation)>::query(registry) {
-            let lod = (translation_f.metric_distance(&translation) / 128.0) as usize;
+        let mut needs_regeneration = HashSet::new();
+        for (entity, chunk, Translation(translation), _) in <(Entity, &Chunk, &Translation, Without<Generating>)>::query(registry) {
+            let lod = (translation_f.metric_distance(&translation) / LOD_VIEW_FACTOR) as usize;
             if chunk.lod().ilog2() as usize != lod {
                 let _ = pre_generator_tx.send(GenReq { position: SVector::<isize, 3>::new(translation.x as isize / CHUNK_AXIS as isize, translation.y as isize / CHUNK_AXIS as isize, translation.z as isize / CHUNK_AXIS as isize), lod });
-                registry.insert(entity, Generating);
-                registry.get_mut::<Neighbors>(entity).unwrap().0 = 0;
-                registry.remove::<Stasis>(entity);
-                registry.remove::<Active>(entity);
+                needs_regeneration.insert((entity, lod));
             }
+        }
+        for (entity, lod) in needs_regeneration {
+            registry.remove::<Neighbors>(entity);
+            registry.remove::<Chunk>(entity);
+            registry.remove::<Active>(entity);
+            registry.remove::<Stasis>(entity);
+            registry.insert(entity, Chunk::new(lod));
+            registry.insert(entity, Neighbors(0));
+            registry.insert(entity, Generating);
         }
         {
             let (_, post_generator_rx) = &self.post_generator;
@@ -421,21 +433,40 @@ impl World {
 
                     neighbors_present += 1;
 
-                    let their_chunk = registry.get_mut::<Chunk>(*neighbor_entity).unwrap();
+                    let their_chunk = registry.get_mut::<Chunk>(*neighbor_entity);
 
-                    calc_block_visible_mask_between_chunks(
+                    if let None = &their_chunk {
+                        registry.dbg_print(*neighbor_entity);
+                        panic!("yo");
+                    }
+
+                    let their_chunk = their_chunk.unwrap();
+
+                    let changed = calc_block_visible_mask_between_chunks(
                         &mut my_chunk,
                         their_chunk,
                         dir,
                         dimension,
                         normal,
                     );
-                });
 
+                    if changed && registry.get::<Active>(*neighbor_entity).is_some() {
+                        if my_chunk.lod() < registry.get::<Chunk>(*neighbor_entity).unwrap().lod()
+                        {
+                            registry.insert(*neighbor_entity, Dirty);
+                        }
+                    }
+                });
+                if registry.get_mut::<Chunk>(entity).is_none() {
+                    registry.dbg_print(entity);
+                    panic!("yo");
+                }
                 *registry.get_mut::<Chunk>(entity).unwrap() = my_chunk;
+                
                 registry.get_mut::<Neighbors>(entity).unwrap().0 = neighbors_present;
                 registry.remove::<Generating>(entity);
                 registry.insert(entity, Stasis);
+
             }
         }
     }

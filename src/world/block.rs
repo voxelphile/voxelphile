@@ -8,6 +8,8 @@ pub enum Block {
     Air,
     Stone,
     Machine,
+    Wire,
+    Source,
 }
 
 impl Block {
@@ -18,6 +20,8 @@ impl Block {
             (Stone, _) => "stone",
             (Machine, Forward) => "machine_front",
             (Machine, _) => "machine_side",
+            (Wire, _) => "wire",
+            (Source, _) => "source",
             //Wood => "wood",
             _ => None?,
         }))

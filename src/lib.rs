@@ -81,11 +81,11 @@ pub fn main() {
         registry.insert(entity, Translation(SVector::<f32, 3>::new(0.0, 0.0, 20.0)));
         registry.insert(entity, Look::default());
         registry.insert(entity, Input::default());
-        registry.insert(entity, Observer { view_distance: 48 });
+        registry.insert(entity, Observer { view_distance: 4 });
         registry.insert(
             entity,
             Loader {
-                load_distance: 48,
+                load_distance: 4,
                 last_translation_f: SVector::<f32, 3>::new(f32::MAX, f32::MAX, f32::MAX),
                 recalculate_needed_chunks: false,
                 chunk_needed_iter: Box::new(0..0),
@@ -97,6 +97,8 @@ pub fn main() {
 
     let mut cursor_movement = SVector::<f32, 2>::default();
     let mut observer_input = Input::default();
+
+    let mut curr_block = Block::Machine;
 
     event_loop.run_return(move |event, _, control_flow| {
         control_flow.set_poll();
@@ -141,6 +143,17 @@ pub fn main() {
                         window.set_cursor_grab(CursorGrabMode::None).unwrap();
                         window.set_cursor_visible(true);
                     }
+                    VirtualKeyCode::Numpad0 => {
+                        curr_block = Block::Machine;
+                    }
+                    
+                    VirtualKeyCode::Numpad1 => {
+                        curr_block = Block::Wire;
+                    }
+                    
+                    VirtualKeyCode::Numpad2 => {
+                        curr_block = Block::Source;
+                    }
                     VirtualKeyCode::D => {
                         observer_input.direction.x = keyboard_input.state.to_dir(1.0)
                     }
@@ -177,7 +190,7 @@ pub fn main() {
                 match (state, button) {
                     (ElementState::Pressed, MouseButton::Left) => {
                         if let Some((e, _)) = <(Entity, &Main)>::query(&mut registry).next() {
-                            registry.insert(e, Change::Place(Block::Machine));
+                            registry.insert(e, Change::Place(curr_block));
                         }
                     }
                     (ElementState::Pressed, MouseButton::Right) => {

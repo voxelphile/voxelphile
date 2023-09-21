@@ -48,7 +48,4 @@ pub enum Temperature {
     Unique(Degrees),
 }
 
-pub enum Electric {
-    Insulator(Resistance),
-    Conductive(Power),
-}
+pub struct Electric(pub Power);
