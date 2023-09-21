@@ -1,13 +1,17 @@
+use std::collections::HashSet;
+
 use nalgebra::SVector;
 
+use super::{block::Block, ChunkPosition};
 use crate::input::Input;
-
-use super::block::Block;
+use band::Entity;
 
 pub struct Hitbox {
     pub offset: SVector<f32, 3>,
     pub size: SVector<f32, 3>,
 }
+
+pub struct ChunkTranslation(pub ChunkPosition);
 
 #[derive(Default)]
 pub struct Translation(pub SVector<f32, 3>);
@@ -37,7 +41,8 @@ pub enum Change {
 }
 pub struct Break(pub Block);
 
-pub struct Dirty;
+pub struct Dirty(pub HashSet<Entity>);
+pub struct Display;
 
 pub type Degrees = f32;
 pub type Power = f32;

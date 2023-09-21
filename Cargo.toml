@@ -18,7 +18,7 @@ shaderc = "*"
 boson = { path = "../boson", optional = true }
 winit = "*"
 raw-window-handle = "*"
-nalgebra = "*"
+nalgebra = { version = "*", features = ["serde-serialize"] }
 strum = "*"
 strum_macros = "*"
 crossbeam = "*"
@@ -26,4 +26,7 @@ rand = "*"
 noise = "*"
 lerp = "*"
 image = "*"
+serde = { version = "*", features = ["derive"] }
+serde_json = "*"
+serde_derive = "*"
 band = { path = "../band" }

@@ -1,11 +1,13 @@
 #![feature(let_chains)]
 mod graphics;
 pub mod input;
+pub mod net;
 mod world;
 use band::{Entity, Registry};
 use graphics::{vertex::BlockVertex, *};
 use input::Input;
 use nalgebra::SVector;
+use net::*;
 use std::{f32::consts::PI, ops, time};
 use winit::{
     dpi::{PhysicalPosition, PhysicalSize},
@@ -65,16 +67,15 @@ pub fn main() {
 
     window.set_title("Xenotech");
 
-    let mut graphics = Graphics::init(&window);
+    let mut registry = Registry::default();
 
-    let mut world = World::new();
+    registry.create(Graphics::init(&window));
+    registry.create(World::new());
 
     let mut cursor_captured = false;
 
     let start_time = time::Instant::now();
     let mut last_delta_time = start_time;
-
-    let mut registry = Registry::default();
 
     {
         let entity = registry.spawn();
@@ -108,7 +109,10 @@ pub fn main() {
                 event: WindowEvent::Resized(resolution),
                 ..
             } => {
-                graphics.resize(resolution.width, resolution.height);
+                registry
+                    .resource_mut::<Graphics>()
+                    .unwrap()
+                    .resize(resolution.width, resolution.height);
             }
             Event::WindowEvent {
                 event:
@@ -146,11 +150,11 @@ pub fn main() {
                     VirtualKeyCode::Numpad0 => {
                         curr_block = Block::Machine;
                     }
-                    
+
                     VirtualKeyCode::Numpad1 => {
                         curr_block = Block::Wire;
                     }
-                    
+
                     VirtualKeyCode::Numpad2 => {
                         curr_block = Block::Source;
                     }
@@ -251,10 +255,27 @@ pub fn main() {
                     };
                 }
                 cursor_movement = SVector::default();
+                let world = registry.resource_mut::<World>().unwrap();
+                let graphics = registry.resource_mut::<Graphics>().unwrap();
+                let mut client = registry.resource_mut::<Client>();
+                let mut server = registry.resource_mut::<Server>();
+                if let Some(client) = &mut client {
+                    let _ = client.recv();
+                }
+                if let Some(server) = &mut server {
+                    let _ = server.recv();
+                    let _ = server.prune();
+                    let _ = server.accept();
+                }
                 world.tick(&mut registry, delta_time);
-                world.load(&mut registry);
-                world.display(&mut registry);
-                graphics.render(&mut registry);
+                if server.is_some() {
+                    world.load(&mut registry);
+                }
+                if client.is_some() {
+                    world.display(&mut registry);
+                    graphics.render(&mut registry);
+                }
+                world.cleanup(&mut registry);
             }
             _ => (),
         }

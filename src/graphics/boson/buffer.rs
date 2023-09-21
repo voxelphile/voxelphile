@@ -200,7 +200,7 @@ pub mod staging {
 
     impl StagingBuffer {
         pub fn new(device: Device) -> Self {
-            let size = (1e+9) as usize;
+            let size = ((1e+9) * (2.0 / 3.0)) as usize;
             let buffer = device
                 .create_buffer(BufferInfo {
                     size,

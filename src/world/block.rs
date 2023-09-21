@@ -1,8 +1,9 @@
+use serde::{Deserialize, Serialize};
 use strum_macros::EnumIter;
 
 use crate::world::structure::Direction;
 
-#[derive(EnumIter, Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(EnumIter, Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[repr(u16)]
 pub enum Block {
     Air,

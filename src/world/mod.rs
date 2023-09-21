@@ -6,6 +6,7 @@ pub mod structure;
 use self::block::*;
 use crate::graphics::{BlockMesh, Graphics, GraphicsInterface, Mesh};
 use crate::input::Input;
+use crate::net::{Client, ClientId, Message, Server};
 use crate::world;
 use crate::world::entity::{Break, Change};
 use crate::world::structure::{calc_ambient_inside_chunk, Direction};
@@ -23,7 +24,7 @@ use std::{
 use structure::Chunk;
 use strum::IntoEnumIterator;
 
-use self::entity::{Dirty, Loader, Look, Observer, Speed, Translation};
+use self::entity::{ChunkTranslation, Dirty, Display, Loader, Look, Observer, Speed, Translation};
 use self::raycast::Ray;
 use self::structure::{
     calc_and_set_ambient_between_chunk_neighbors, calc_block_visible_mask_between_chunks,
@@ -91,10 +92,15 @@ impl World {
                 target_position.z.div_euclid(CHUNK_AXIS as isize),
             );
 
-            set_block_in_chunk.entry(chunk_position).or_default().push((*target_position, *block));
+            set_block_in_chunk
+                .entry(chunk_position)
+                .or_default()
+                .push((*target_position, *block));
         }
         for (chunk_position, blocks_at_position) in set_block_in_chunk {
-            let chunk = registry.get_mut::<Chunk>(self.chunks[&chunk_position]).unwrap();
+            let chunk = registry
+                .get_mut::<Chunk>(self.chunks[&chunk_position])
+                .unwrap();
             for (mut target_position, block) in blocks_at_position {
                 target_position /= chunk.lod() as isize;
                 let local_position = SVector::<usize, 3>::new(
@@ -139,7 +145,14 @@ impl World {
             registry.insert(self.chunks[&position], NeedsAoBorderCalc);
         }
         for position in update_mesh {
-            registry.insert(self.chunks[&position], Dirty);
+            let active_clients = <(Entity, &ClientId)>::query(registry)
+                .map(|(e, _)| e)
+                .collect::<HashSet<_>>();
+            if let Some(Dirty(dirty_clients)) = registry.get_mut::<Dirty>(self.chunks[&position]) {
+                dirty_clients.extend(active_clients);
+            } else {
+                registry.insert(self.chunks[&position], Dirty(active_clients));
+            }
         }
     }
 
@@ -246,40 +259,15 @@ impl World {
     }
 
     pub fn display(&mut self, registry: &mut Registry) {
+        let mut client = registry.resource_mut::<Client>().unwrap();
         let Some((Translation(translation_f), _)) = <(&Translation, &Observer)>::query(registry).next() else {
             return;
         };
-        let mut activate = HashSet::new();
-        for (entity, neighbors, _, _) in <(Entity, &Neighbors, &Chunk, &Stasis)>::query(registry) {
-            if neighbors.0 == 6 {
-                activate.insert(entity);
-            }
-        }
-        for entity in activate {
-            registry.remove::<Stasis>(entity);
-            registry.insert(entity, Active);
-
-            let mut unique = false;
-            let chunk = registry.get::<Chunk>(entity).unwrap();
-            for i in 0..Structure::size(chunk) {
-                if chunk.get(i).visible_mask != 0xFF {
-                    unique = true;
-                    break;
-                }
-            }
-            if !unique {
+        for message in client.get(|m| matches!(m, Message::Blocks { .. })) {
+            let Message::Blocks { set } = message else {
                 continue;
-            }
-            registry.insert(entity, Dirty);
-            registry.insert(
-                entity,
-                Lod(
-                    (translation_f.metric_distance(&registry.get::<Translation>(entity).unwrap().0)
-                        / 256.0) as u8,
-                ),
-            );
-            registry.insert(entity, NeedsAoBorderCalc);
-        }
+            };
+        } 
         let mut remove_ao_calc = HashSet::new();
         'a: for (entity, _) in <(Entity, &NeedsAoBorderCalc)>::query(registry) {
             let position = self.mapping[&entity];
@@ -305,6 +293,7 @@ impl World {
         }
     }
     pub fn load(&mut self, registry: &mut Registry) {
+        let mut server = registry.resource_mut::<Server>().unwrap();
         let Some((Translation(translation_f), _)) = <(&Translation, &Observer)>::query(registry).next() else {
             return;
         };
@@ -367,9 +356,8 @@ impl World {
                 }
             }
         }
-            let (pre_generator_tx, _) = &self.pre_generator;
-            for position in self.load_chunk_order.drain(..) {
-
+        let (pre_generator_tx, _) = &self.pre_generator;
+        for position in self.load_chunk_order.drain(..) {
             let translation = nalgebra::convert::<_, SVector<f32, 3>>(position) * CHUNK_AXIS as f32;
             let lod = (translation_f.metric_distance(&translation) / LOD_VIEW_FACTOR) as usize;
 
@@ -377,12 +365,7 @@ impl World {
 
             let entity = registry.spawn();
             {
-                registry.insert(
-                    entity,
-                    Translation(
-                        translation,
-                    ),
-                );
+                registry.insert(entity, Translation(translation));
                 registry.insert(entity, Chunk::new(lod));
                 registry.insert(entity, Neighbors(0));
                 registry.insert(entity, Generating);
@@ -392,10 +375,19 @@ impl World {
             self.loaded.insert(position);
         }
         let mut needs_regeneration = HashSet::new();
-        for (entity, chunk, Translation(translation), _) in <(Entity, &Chunk, &Translation, Without<Generating>)>::query(registry) {
+        for (entity, chunk, Translation(translation), _) in
+            <(Entity, &Chunk, &Translation, Without<Generating>)>::query(registry)
+        {
             let lod = (translation_f.metric_distance(&translation) / LOD_VIEW_FACTOR) as usize;
             if chunk.lod().ilog2() as usize != lod {
-                let _ = pre_generator_tx.send(GenReq { position: SVector::<isize, 3>::new(translation.x as isize / CHUNK_AXIS as isize, translation.y as isize / CHUNK_AXIS as isize, translation.z as isize / CHUNK_AXIS as isize), lod });
+                let _ = pre_generator_tx.send(GenReq {
+                    position: SVector::<isize, 3>::new(
+                        translation.x as isize / CHUNK_AXIS as isize,
+                        translation.y as isize / CHUNK_AXIS as isize,
+                        translation.z as isize / CHUNK_AXIS as isize,
+                    ),
+                    lod,
+                });
                 needs_regeneration.insert((entity, lod));
             }
         }
@@ -428,7 +420,9 @@ impl World {
                     }
 
                     if registry.get::<Stasis>(*neighbor_entity).is_some() {
-                        registry.get_mut::<Neighbors>(*neighbor_entity).unwrap().0 = (registry.get_mut::<Neighbors>(*neighbor_entity).unwrap().0 + 1).clamp(0, 6);
+                        registry.get_mut::<Neighbors>(*neighbor_entity).unwrap().0 =
+                            (registry.get_mut::<Neighbors>(*neighbor_entity).unwrap().0 + 1)
+                                .clamp(0, 6);
                     }
 
                     neighbors_present += 1;
@@ -451,8 +445,7 @@ impl World {
                     );
 
                     if changed && registry.get::<Active>(*neighbor_entity).is_some() {
-                        if my_chunk.lod() < registry.get::<Chunk>(*neighbor_entity).unwrap().lod()
-                        {
+                        if my_chunk.lod() < registry.get::<Chunk>(*neighbor_entity).unwrap().lod() {
                             registry.insert(*neighbor_entity, Dirty);
                         }
                     }
@@ -462,11 +455,58 @@ impl World {
                     panic!("yo");
                 }
                 *registry.get_mut::<Chunk>(entity).unwrap() = my_chunk;
-                
+
                 registry.get_mut::<Neighbors>(entity).unwrap().0 = neighbors_present;
                 registry.remove::<Generating>(entity);
                 registry.insert(entity, Stasis);
 
+                let mut activate = HashSet::new();
+                for (entity, neighbors, _, _) in
+                    <(Entity, &Neighbors, &Chunk, &Stasis)>::query(registry)
+                {
+                    if neighbors.0 == 6 {
+                        activate.insert(entity);
+                    }
+                }
+                for entity in activate {
+                    registry.remove::<Stasis>(entity);
+                    registry.insert(entity, Active);
+
+                    let mut unique = false;
+                    let chunk = registry.get::<Chunk>(entity).unwrap();
+                    for i in 0..Structure::size(chunk) {
+                        if chunk.get(i).visible_mask != 0xFF {
+                            unique = true;
+                            break;
+                        }
+                    }
+                    if !unique {
+                        continue;
+                    }
+                    let active_clients = <(Entity, &ClientId)>::query(registry)
+                        .map(|(e, _)| e)
+                        .collect::<HashSet<_>>();
+                    if let Some(Dirty(dirty_clients)) = registry.get_mut::<Dirty>(entity) {
+                        dirty_clients.extend(active_clients);
+                    } else {
+                        registry.insert(entity, Dirty(active_clients));
+                    }
+                    registry.insert(entity, NeedsAoBorderCalc);
+                }
+            }
+        }
+        for (chunk, ChunkTranslation(position), Dirty(clients), _) in
+            <(&Chunk, &ChunkTranslation, &Dirty, &Active)>::query(registry)
+        {
+            for client in clients {
+                let set = Vec::with_capacity(Structure::size(chunk));
+                for i in 0..Structure::size(chunk) {
+                    let info = chunk.get(i);
+                    let local = nalgebra::convert::<_, WorldPosition>(chunk.delinearize(i));
+                    set.push((position * CHUNK_AXIS as isize + local, info.block));
+                }
+                let message = Message::Blocks { set };
+                server.send(*registry.get::<ClientId>(*client).unwrap(), message.clone());
             }
         }
     }
@@ -474,7 +514,7 @@ impl World {
 
 pub struct GenReq {
     position: SVector<isize, 3>,
-    lod: usize
+    lod: usize,
 }
 
 pub struct GenResp {

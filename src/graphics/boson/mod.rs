@@ -5,7 +5,7 @@ mod pool;
 
 use crate::world::{
     block::Block,
-    entity::{Dirty, Look, Observer, Translation},
+    entity::{Dirty, Look, Observer, Translation, Display},
     structure::{gen_block_mesh, Chunk, Direction},
     Active, NeedsAoBorderCalc, RemoveChunkMesh,
 };
@@ -24,7 +24,7 @@ use self::{
     pool::{index_pool_task, vertex_pool_task, Pool},
 };
 use super::{BlockMesh, Mesh};
-use band::*;
+use band::{Entity, QueryExt, Registry, Without};
 use boson::{
     commands::RenderPassBeginInfo,
     pipeline::{Binding, BindingState},
@@ -41,11 +41,6 @@ use super::{
 
 static UBER_VERT_SHADER: &'static [u8] = include_bytes!("../../../assets/uber.vert.spirv");
 static UBER_FRAG_SHADER: &'static [u8] = include_bytes!("../../../assets/uber.frag.spirv");
-
-#[derive(Clone, Copy)]
-pub struct BlurPush {
-    dir: u32,
-}
 
 pub struct Boson {
     context: Context,
@@ -682,7 +677,6 @@ impl super::GraphicsInterface for Boson {
             return;
         };
 
-        let mut remove_dirty = HashSet::new();
         let mut remove_mesh = HashSet::new();
         let mut add_mesh = HashMap::new();
         for (entity, chunk, Translation(position), _, _, mesh, _) in <(
@@ -690,7 +684,7 @@ impl super::GraphicsInterface for Boson {
             &Chunk,
             &Translation,
             &Active,
-            &Dirty,
+            &Display,
             Option<&Mesh>,
             Without<NeedsAoBorderCalc>,
         )>::query(registry)
@@ -700,7 +694,6 @@ impl super::GraphicsInterface for Boson {
             if let Some(_) = mesh {
                 remove_mesh.insert(entity);
             }
-            remove_dirty.insert(entity);
             let position = *position;
             add_mesh.insert(
                 entity,
@@ -725,10 +718,6 @@ impl super::GraphicsInterface for Boson {
 
         for (entity, mesh) in add_mesh {
             registry.insert(entity, self.create_block_mesh(mesh));
-        }
-
-        for entity in remove_dirty {
-            registry.remove::<Dirty>(entity);
         }
 
         {

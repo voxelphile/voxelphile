@@ -244,14 +244,16 @@ pub fn hit(ray: Ray) -> Option<Hit> {
         (position.z as isize).div_euclid(CHUNK_AXIS as _),
     );
 
-    let i_chunk = registry.get::<Chunk>(*chunks.get(&i_chunk_position).unwrap()).unwrap();
+    let i_chunk = registry
+        .get::<Chunk>(*chunks.get(&i_chunk_position).unwrap())
+        .unwrap();
 
     let i_chunk_size = SVector::<isize, 3>::new(
         i_chunk.axis().x as isize,
         i_chunk.axis().x as isize,
         i_chunk.axis().x as isize,
     );
-    
+
     let i_position = position / i_chunk.lod() as isize;
 
     let i_local_position = SVector::<usize, 3>::new(
@@ -260,21 +262,22 @@ pub fn hit(ray: Ray) -> Option<Hit> {
         (i_position.z as isize).rem_euclid(i_chunk_size.z) as usize,
     );
 
-   
     let b_chunk_position = SVector::<isize, 3>::new(
         (back_step.x as isize).div_euclid(CHUNK_AXIS as _),
         (back_step.y as isize).div_euclid(CHUNK_AXIS as _),
         (back_step.z as isize).div_euclid(CHUNK_AXIS as _),
     );
 
-    let b_chunk = registry.get::<Chunk>(*chunks.get(&i_chunk_position).unwrap()).unwrap();
+    let b_chunk = registry
+        .get::<Chunk>(*chunks.get(&i_chunk_position).unwrap())
+        .unwrap();
 
     let b_chunk_size = SVector::<isize, 3>::new(
         b_chunk.axis().x as isize,
         b_chunk.axis().x as isize,
         b_chunk.axis().x as isize,
     );
-    
+
     let b_position = back_step / b_chunk.lod() as isize;
 
     let b_local_position = SVector::<usize, 3>::new(
