@@ -1,6 +1,7 @@
 use std::collections::HashSet;
 
 use nalgebra::SVector;
+use serde_derive::{Deserialize, Serialize};
 
 use super::{block::Block, ChunkPosition};
 use crate::input::Input;
@@ -35,6 +36,7 @@ pub struct Loader {
 #[derive(Default)]
 pub struct Main;
 
+#[derive(Serialize, Deserialize, Clone, Copy)]
 pub enum Change {
     Place(Block),
     Break(Block),

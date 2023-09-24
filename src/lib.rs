@@ -2,8 +2,10 @@
 mod graphics;
 pub mod input;
 pub mod net;
+pub mod util;
 mod world;
 use band::{Entity, Registry};
+use core::panic;
 use graphics::{vertex::BlockVertex, *};
 use input::Input;
 use nalgebra::SVector;
@@ -17,13 +19,14 @@ use winit::{
 };
 use world::entity::{Loader, Speed};
 use world::{
-    structure::{gen_block_mesh, gen_chunk, CHUNK_AXIS},
-    World,
+    structure::{gen_block_mesh, CHUNK_AXIS},
+    ClientWorld,
 };
 
 use crate::world::{
     block::Block,
     entity::{Change, Look, Main, Observer, Translation},
+    ServerWorld,
 };
 
 pub struct EventLoop(pub winit::event_loop::EventLoop<()>);
@@ -70,12 +73,12 @@ pub fn main() {
     let mut registry = Registry::default();
 
     registry.create(Graphics::init(&window));
-    registry.create(World::new());
-
-    let mut cursor_captured = false;
-
-    let start_time = time::Instant::now();
-    let mut last_delta_time = start_time;
+    if let Ok(server) = Server::bind() {
+        registry.create(server);
+        registry.create(ServerWorld::new());
+    }
+    registry.create(ClientWorld::new());
+    registry.create(Client::connect(&format!("127.0.0.1:{}", net::SERVER_PORT)).unwrap());
 
     {
         let entity = registry.spawn();
@@ -83,18 +86,15 @@ pub fn main() {
         registry.insert(entity, Look::default());
         registry.insert(entity, Input::default());
         registry.insert(entity, Observer { view_distance: 4 });
-        registry.insert(
-            entity,
-            Loader {
-                load_distance: 4,
-                last_translation_f: SVector::<f32, 3>::new(f32::MAX, f32::MAX, f32::MAX),
-                recalculate_needed_chunks: false,
-                chunk_needed_iter: Box::new(0..0),
-            },
-        );
         registry.insert(entity, Speed(10.4));
         registry.insert(entity, Main);
+        registry.insert(entity, ClientTag);
     }
+
+    let mut cursor_captured = false;
+
+    let start_time = time::Instant::now();
+    let mut last_delta_time = start_time;
 
     let mut cursor_movement = SVector::<f32, 2>::default();
     let mut observer_input = Input::default();
@@ -255,27 +255,35 @@ pub fn main() {
                     };
                 }
                 cursor_movement = SVector::default();
-                let world = registry.resource_mut::<World>().unwrap();
+
                 let graphics = registry.resource_mut::<Graphics>().unwrap();
-                let mut client = registry.resource_mut::<Client>();
-                let mut server = registry.resource_mut::<Server>();
-                if let Some(client) = &mut client {
-                    let _ = client.recv();
+
+                if let Some(connection) = registry.destroy::<Connection>() {
+                    match connection.check_connection() {
+                        Ok(Ok(client)) => registry.create(client),
+                        Err(conn) => registry.create(conn),
+                        Ok(Err(e)) => panic!("whoopsie daisy, {:?}", e),
+                    }
                 }
-                if let Some(server) = &mut server {
-                    let _ = server.recv();
-                    let _ = server.prune();
-                    let _ = server.accept();
-                }
-                world.tick(&mut registry, delta_time);
-                if server.is_some() {
+
+                let server = registry.resource_mut::<Server>();
+                let client = registry.resource_mut::<Client>();
+                let server_world = registry.resource_mut::<ServerWorld>();
+                let client_world = registry.resource_mut::<ClientWorld>();
+
+                if let Some(world) = server_world && let Some(_) = server {
+                    world.tick(&mut registry, delta_time);
                     world.load(&mut registry);
                 }
-                if client.is_some() {
+
+                if let Some(world) = client_world && let Some(_) = client {     
+                    world.tick(&mut registry, delta_time);
                     world.display(&mut registry);
-                    graphics.render(&mut registry);
                 }
-                world.cleanup(&mut registry);
+                graphics.render(&mut registry);
+                /*if let Some(world) = client_world {
+                    world.cleanup(&mut registry);
+                }*/
             }
             _ => (),
         }

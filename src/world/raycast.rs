@@ -2,13 +2,19 @@ use std::ops::Rem;
 
 use band::*;
 use nalgebra::SVector;
+use serde_derive::{Serialize, Deserialize};
 use std::collections::HashMap;
 
 use super::{
-    block::Block,
-    structure::{Structure, CHUNK_AXIS},
-    Chunk, World,
+    block::Block, dimension::ChunkState, structure::CHUNK_AXIS, Chunk, ChunkPosition, ClientWorld,
+    WorldPosition,
 };
+
+#[derive(Clone, Serialize, Deserialize)]
+pub enum Target {
+    Position,
+    Backstep,
+}
 
 #[derive(Clone)]
 pub struct Descriptor<'a> {
@@ -17,18 +23,14 @@ pub struct Descriptor<'a> {
     pub minimum: SVector<isize, 3>,
     pub maximum: SVector<isize, 3>,
     pub max_distance: f32,
-    pub chunks: &'a HashMap<SVector<isize, 3>, Entity>,
-    pub registry: &'a Registry,
+    pub chunks: &'a HashMap<ChunkPosition, ChunkState>,
 }
 
 #[derive(Clone)]
 pub enum State<'a> {
     Traversal {
-        chunks: &'a HashMap<SVector<isize, 3>, Entity>,
-        registry: &'a Registry,
-        world_position: SVector<isize, 3>,
-        chunk_position: SVector<isize, 3>,
-        chunk_reference: &'a Chunk,
+        chunks: &'a HashMap<ChunkPosition, ChunkState>,
+        world_position: WorldPosition,
         distance: f32,
         mask: SVector<bool, 3>,
         side_dist: SVector<f32, 3>,
@@ -58,10 +60,7 @@ impl<'a> From<Descriptor<'a>> for State<'a> {
         );
         State::Traversal {
             world_position,
-            chunk_position,
-            chunk_reference: desc.registry.get(desc.chunks[&chunk_position]).unwrap(),
             chunks: desc.chunks,
-            registry: desc.registry,
             distance: 0.0,
             mask: SVector::<bool, 3>::new(false, false, false),
             side_dist: SVector::<f32, 3>::new(
@@ -120,7 +119,7 @@ pub fn start(descriptor: Descriptor) -> Ray {
     }
 }
 
-pub fn drive<'a, 'b: 'a>(world: &World, ray: &'a mut Ray<'b>) -> &'a mut Ray<'b> {
+pub fn drive<'a, 'b: 'a>(ray: &'a mut Ray<'b>) -> &'a mut Ray<'b> {
     //checks
     {
         let State::Traversal {
@@ -128,9 +127,6 @@ pub fn drive<'a, 'b: 'a>(world: &World, ray: &'a mut Ray<'b>) -> &'a mut Ray<'b>
             step_count,
             distance,
             chunks,
-            registry,
-            mut chunk_position,
-            mut chunk_reference,
             ..
         } = ray.state else {
             return ray;
@@ -153,21 +149,26 @@ pub fn drive<'a, 'b: 'a>(world: &World, ray: &'a mut Ray<'b>) -> &'a mut Ray<'b>
                 (position.z as isize).div_euclid(i_chunk_size.z),
             );
 
-            if translation_chunk != chunk_position {
-                chunk_position = translation_chunk;
-                chunk_reference = registry.get(chunks[&chunk_position]).unwrap();
-            }
-            let position2 = position / chunk_reference.lod() as isize;
-            let mut local_position = SVector::<usize, 3>::new(
-                (position2.x as usize).rem_euclid(chunk_reference.axis().x as usize) as usize,
-                (position2.y as usize).rem_euclid(chunk_reference.axis().y as usize) as usize,
-                (position2.z as usize).rem_euclid(chunk_reference.axis().z as usize) as usize,
+            let chunk = match &chunks[&translation_chunk] {
+                ChunkState::Stasis { chunk, .. } => chunk,
+                ChunkState::Active { chunk } => chunk,
+                _ => {
+                    ray.state = State::OutOfBounds;
+                    return ray;
+                }
+            };
+
+            let position2 = position / Chunk::lod(chunk.lod_level()) as isize;
+
+            let axis = Chunk::axis(chunk.lod_level());
+
+            let local_position = SVector::<usize, 3>::new(
+                (position2.x as usize).rem_euclid(axis.x as usize) as usize,
+                (position2.y as usize).rem_euclid(axis.y as usize) as usize,
+                (position2.z as usize).rem_euclid(axis.z as usize) as usize,
             );
 
-            match chunk_reference
-                .get(chunk_reference.linearize(local_position))
-                .block
-            {
+            match chunk.get(Chunk::linearize(axis, local_position)).block {
                 Block::Air => {}
                 block => {
                     ray.state = State::BlockFound(block, Box::new(ray.state.clone()));
@@ -227,7 +228,7 @@ pub fn hit(ray: Ray) -> Option<Hit> {
         None?
     };
 
-    let State::Traversal { world_position: position, ray_step, mask, registry, chunks, .. } = *prev_state else {
+    let State::Traversal { world_position: position, ray_step, mask, chunks, .. } = *prev_state else {
         None?
     };
 
@@ -244,17 +245,18 @@ pub fn hit(ray: Ray) -> Option<Hit> {
         (position.z as isize).div_euclid(CHUNK_AXIS as _),
     );
 
-    let i_chunk = registry
-        .get::<Chunk>(*chunks.get(&i_chunk_position).unwrap())
-        .unwrap();
+    let i_chunk = match &chunks[&i_chunk_position] {
+        ChunkState::Active { chunk } => chunk,
+        ChunkState::Stasis { chunk, .. } => chunk,
+        _ => None?,
+    };
 
-    let i_chunk_size = SVector::<isize, 3>::new(
-        i_chunk.axis().x as isize,
-        i_chunk.axis().x as isize,
-        i_chunk.axis().x as isize,
-    );
+    let i_axis = Chunk::axis(i_chunk.lod_level());
 
-    let i_position = position / i_chunk.lod() as isize;
+    let i_chunk_size =
+        SVector::<isize, 3>::new(i_axis.x as isize, i_axis.y as isize, i_axis.z as isize);
+
+    let i_position = position / Chunk::lod(i_chunk.lod_level()) as isize;
 
     let i_local_position = SVector::<usize, 3>::new(
         (i_position.x as isize).rem_euclid(i_chunk_size.x) as usize,
@@ -268,17 +270,18 @@ pub fn hit(ray: Ray) -> Option<Hit> {
         (back_step.z as isize).div_euclid(CHUNK_AXIS as _),
     );
 
-    let b_chunk = registry
-        .get::<Chunk>(*chunks.get(&i_chunk_position).unwrap())
-        .unwrap();
+    let b_chunk = match &chunks[&b_chunk_position] {
+        ChunkState::Active { chunk } => chunk,
+        ChunkState::Stasis { chunk, .. } => chunk,
+        _ => None?,
+    };
 
-    let b_chunk_size = SVector::<isize, 3>::new(
-        b_chunk.axis().x as isize,
-        b_chunk.axis().x as isize,
-        b_chunk.axis().x as isize,
-    );
+    let b_axis = Chunk::axis(i_chunk.lod_level());
 
-    let b_position = back_step / b_chunk.lod() as isize;
+    let b_chunk_size =
+        SVector::<isize, 3>::new(b_axis.x as isize, b_axis.y as isize, b_axis.z as isize);
+
+    let b_position = back_step / Chunk::lod(b_chunk.lod_level()) as isize;
 
     let b_local_position = SVector::<usize, 3>::new(
         (b_position.x as isize).rem_euclid(b_chunk_size.x) as usize,

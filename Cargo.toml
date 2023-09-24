@@ -28,5 +28,6 @@ lerp = "*"
 image = "*"
 serde = { version = "*", features = ["derive"] }
 serde_json = "*"
+serde_bytes = "*"
 serde_derive = "*"
 band = { path = "../band" }

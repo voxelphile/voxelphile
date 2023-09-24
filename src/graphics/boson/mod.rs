@@ -5,7 +5,7 @@ mod pool;
 
 use crate::world::{
     block::Block,
-    entity::{Dirty, Look, Observer, Translation, Display},
+    entity::{Dirty, Display, Look, Observer, Translation},
     structure::{gen_block_mesh, Chunk, Direction},
     Active, NeedsAoBorderCalc, RemoveChunkMesh,
 };
@@ -78,7 +78,7 @@ pub struct Boson {
 }
 
 impl Boson {
-    fn create_block_mesh(&mut self, info: super::BlockMesh) -> super::Mesh {
+    pub fn create_block_mesh(&mut self, info: super::BlockMesh) -> super::Mesh {
         let vertices = self.block_vertices.section(&info.vertices);
         let mut modified_indices = vec![];
         for cursor in 0..info.indices.len() {
@@ -115,11 +115,11 @@ impl Boson {
         }
     }
 
-    fn block_mapping(&self, block: Block, dir: Direction) -> Option<u32> {
+    pub fn block_mapping(&self, block: Block, dir: Direction) -> Option<u32> {
         self.atlas.block_mapping(block, dir)
     }
 
-    fn destroy_block_mesh(&mut self, mesh: super::Mesh) {
+    pub fn destroy_block_mesh(&mut self, mesh: super::Mesh) {
         for bucket in mesh.vertices {
             self.block_vertices.unsection(bucket);
         }
@@ -676,49 +676,6 @@ impl super::GraphicsInterface for Boson {
         let Some((observer, Translation(translation), Look(look))) = <(&Observer, &Translation, &Look)>::query(registry).next() else {
             return;
         };
-
-        let mut remove_mesh = HashSet::new();
-        let mut add_mesh = HashMap::new();
-        for (entity, chunk, Translation(position), _, _, mesh, _) in <(
-            Entity,
-            &Chunk,
-            &Translation,
-            &Active,
-            &Display,
-            Option<&Mesh>,
-            Without<NeedsAoBorderCalc>,
-        )>::query(registry)
-        {
-            let (vertices, indices) =
-                gen_block_mesh(chunk, |block, dir| self.block_mapping(block, dir));
-            if let Some(_) = mesh {
-                remove_mesh.insert(entity);
-            }
-            let position = *position;
-            add_mesh.insert(
-                entity,
-                BlockMesh {
-                    vertices,
-                    indices,
-                    position,
-                },
-            );
-        }
-
-        for (entity, _, _, _) in <(Entity, &Chunk, &Mesh, &RemoveChunkMesh)>::query(registry) {
-            remove_mesh.insert(entity);
-        }
-
-        for entity in remove_mesh {
-            self.destroy_block_mesh(registry.remove::<Mesh>(entity).unwrap());
-            if let Some(_) = registry.get::<RemoveChunkMesh>(entity) {
-                registry.remove::<RemoveChunkMesh>(entity);
-            }
-        }
-
-        for (entity, mesh) in add_mesh {
-            registry.insert(entity, self.create_block_mesh(mesh));
-        }
 
         {
             let clip = SMatrix::<f32, 4, 4>::new(
