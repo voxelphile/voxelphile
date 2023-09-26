@@ -42,7 +42,6 @@ fn load_image_data<S: AsRef<str>>(str: S, ty: ImageType) -> Vec<f32> {
         _ => "",
     };*/
     name = name + ".png";
-    dbg!(&name);
     let img = ImageReader::open(&name).unwrap().decode().unwrap();
 
     let rgba32f = img.into_rgba32f();

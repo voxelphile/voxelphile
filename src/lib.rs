@@ -10,7 +10,7 @@ use graphics::{vertex::BlockVertex, *};
 use input::Input;
 use nalgebra::SVector;
 use net::*;
-use std::{f32::consts::PI, ops, time};
+use std::{f32::consts::PI, ops, time::{self, SystemTime}};
 use winit::{
     dpi::{PhysicalPosition, PhysicalSize},
     event::{ElementState, Event, MouseButton, VirtualKeyCode, WindowEvent},
@@ -23,11 +23,11 @@ use world::{
     ClientWorld,
 };
 
-use crate::world::{
+use crate::{world::{
     block::Block,
-    entity::{Change, Look, Main, Observer, Translation},
+    entity::{Change, Look, Main, Observer, Translation, Target},
     ServerWorld,
-};
+}, input::Inputs};
 
 pub struct EventLoop(pub winit::event_loop::EventLoop<()>);
 
@@ -64,7 +64,13 @@ fn android_main(app: AndroidApp) {
     main();
 }
 
+const FIXED_TIME: f32 = 1.0 / 20.0;
+
 pub fn main() {
+    #[cfg(not(target_os = "android"))]
+    let tracy = tracy_client::Client::start();
+    profiling::scope!("main");
+
     let event_loop = unsafe { EVENT_LOOP.as_mut().unwrap() };
     let mut window = WindowBuilder::new().build(event_loop).unwrap();
 
@@ -83,8 +89,9 @@ pub fn main() {
     {
         let entity = registry.spawn();
         registry.insert(entity, Translation(SVector::<f32, 3>::new(0.0, 0.0, 20.0)));
+        registry.insert(entity, Target(SVector::<f32, 3>::new(0.0, 0.0, 20.0)));
         registry.insert(entity, Look::default());
-        registry.insert(entity, Input::default());
+        registry.insert(entity, Inputs::default());
         registry.insert(entity, Observer { view_distance: 4 });
         registry.insert(entity, Speed(10.4));
         registry.insert(entity, Main);
@@ -95,11 +102,14 @@ pub fn main() {
 
     let start_time = time::Instant::now();
     let mut last_delta_time = start_time;
+    let mut accum_time = 0.0f32;
 
     let mut cursor_movement = SVector::<f32, 2>::default();
     let mut observer_input = Input::default();
 
     let mut curr_block = Block::Machine;
+
+    let mut tick_number = 0usize;
 
     event_loop.run_return(move |event, _, control_flow| {
         control_flow.set_poll();
@@ -247,40 +257,59 @@ pub fn main() {
                 last_delta_time = now;
 
                 const SENSITIVITY: f32 = 2e-3;
-                use band::*;
-                if let Some((input, _)) = <(&mut Input, &Main)>::query(&mut registry).next() {
-                    *input = Input {
-                        gaze: SENSITIVITY * -cursor_movement,
-                        ..observer_input
-                    };
-                }
+                observer_input.gaze = SENSITIVITY * -cursor_movement;
                 cursor_movement = SVector::default();
+
+                use band::*;
+                if let Some((inputs, _)) = <(&mut Inputs, &Main)>::query(&mut registry).next() {
+                    if inputs.state.len() == 0 {
+                        inputs.state.push_back((SystemTime::now(), observer_input.clone()));
+                    } else if let Some((_, prev_input)) = inputs.state.get(inputs.state.len() - 1) {
+                        if *prev_input != observer_input {
+                            inputs.state.push_back((SystemTime::now(), observer_input.clone()));
+                        }
+                    } else {
+                        inputs.state.push_back((SystemTime::now(), observer_input.clone()));
+                    }
+                }
 
                 let graphics = registry.resource_mut::<Graphics>().unwrap();
 
                 if let Some(connection) = registry.destroy::<Connection>() {
                     match connection.check_connection() {
                         Ok(Ok(client)) => registry.create(client),
-                        Err(conn) => registry.create(conn),
                         Ok(Err(e)) => panic!("whoopsie daisy, {:?}", e),
+                        Err(conn) => registry.create(conn),
                     }
                 }
 
                 let server = registry.resource_mut::<Server>();
                 let client = registry.resource_mut::<Client>();
-                let server_world = registry.resource_mut::<ServerWorld>();
-                let client_world = registry.resource_mut::<ClientWorld>();
+                let mut server_world = registry.resource_mut::<ServerWorld>();
+                let mut client_world = registry.resource_mut::<ClientWorld>();
 
-                if let Some(world) = server_world && let Some(_) = server {
-                    world.tick(&mut registry, delta_time);
+                accum_time += delta_time;
+                if let Some(world) = &mut server_world && let Some(_) = server {
+                    world.delta_tick(&mut registry, delta_time);
                     world.load(&mut registry);
                 }
-
-                if let Some(world) = client_world && let Some(_) = client {     
-                    world.tick(&mut registry, delta_time);
-                    world.display(&mut registry);
+                if let Some(world) = &mut client_world && let Some(_) = client {     
+                    world.delta_tick(&mut registry, delta_time);
+                }       
+                while accum_time >= FIXED_TIME {
+                    if let Some(world) = &mut server_world && let Some(_) = server {
+                        world.fixed_tick(&mut registry, delta_time);
+                    }
+    
+                    if let Some(world) = &mut client_world && let Some(_) = client {     
+                        world.fixed_tick(&mut registry, delta_time);
+                        world.display(&mut registry);
+                    }
+                    accum_time -= FIXED_TIME;
+                    tick_number += 1;
                 }
                 graphics.render(&mut registry);
+                profiling::finish_frame!()
                 /*if let Some(world) = client_world {
                     world.cleanup(&mut registry);
                 }*/

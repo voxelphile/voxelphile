@@ -7,18 +7,19 @@ pub mod structure;
 use self::block::*;
 use self::dimension::{ChunkState, Dimension};
 use crate::graphics::{BlockMesh, Graphics, GraphicsInterface, Mesh};
-use crate::input::Input;
-use crate::net::{ChunkActivated, ChunkMessage, ChunkUpdated, Client, ClientId, Message, Server, ClientTag, ServerTag};
+use crate::input::{Input, Inputs};
+use crate::net::{ChunkActivated, ChunkMessage, ChunkUpdated, Client, ClientId, Message, Server, ClientTag, ServerTag, Correct};
 use crate::util::rle;
-use crate::world;
+use crate::{world, FIXED_TIME};
 use crate::world::entity::{Break, Change};
-use crate::world::structure::{calc_ambient_inside_chunk, Direction};
+use crate::world::structure::*;
 use band::{QueryExt, *};
 use crossbeam::channel::{self, Receiver, Sender};
 use lerp::num_traits::ToBytes;
 use nalgebra::{Dim, SVector, Unit, UnitQuaternion};
-use std::collections::VecDeque;
-use std::thread;
+use std::collections::{VecDeque, BTreeMap};
+use std::time::{Instant, SystemTime};
+use std::{thread, iter, fmt};
 use std::{
     collections::{HashMap, HashSet},
     hash::Hash,
@@ -29,11 +30,11 @@ use std::{mem, ops};
 use structure::Chunk;
 use strum::IntoEnumIterator;
 
-use self::entity::{ChunkTranslation, Dirty, Display, Loader, Look, Observer, Speed, Translation};
+use self::entity::{ChunkTranslation, Dirty, Display, Loader, Look, Observer, Speed, Translation, Target, Main};
 use self::raycast::Ray;
 use self::structure::{
-    calc_and_set_ambient_between_chunk_neighbors, calc_block_visible_mask_between_chunks,
-    calc_block_visible_mask_inside_chunk, gen, gen_block_mesh, neighbors, BlockInfo, CHUNK_AXIS,
+     calc_block_visible_mask_between_chunks,
+    calc_block_visible_mask_inside_chunk, gen, gen_block_mesh, neighbors, ClientBlockInfo, CHUNK_AXIS, ServerBlockInfo,
 };
 
 pub struct Neighbors(u8);
@@ -53,47 +54,34 @@ pub struct ChunkMarker;
 
 pub const LOD_VIEW_FACTOR: f32 = 256.0;
 
-pub struct DimensionState {
+pub struct DimensionState<C: Chunk> {
     chunk_entity_mapping: HashMap<ChunkPosition, Entity>,
     entity_chunk_mapping: HashMap<Entity, ChunkPosition>,
-    dimension: Dimension,
+    dimension: Dimension<C>,
 }
 
-impl ops::Deref for DimensionState {
-    type Target = Dimension;
+impl<C: Chunk> ops::Deref for DimensionState<C> {
+    type Target = Dimension<C>;
     fn deref(&self) -> &Self::Target {
         &self.dimension
     }
 }
 
-impl ops::DerefMut for DimensionState {
+impl<C: Chunk> ops::DerefMut for DimensionState<C> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.dimension
     }
 }
 
 pub struct ClientWorld {
-    dimension_state: DimensionState,
+    dimension_state: DimensionState<ClientChunk>,
 }
 
-fn common_tick<Tag: Component>(registry: &mut Registry, delta_time: f32) {
-    for (Look(look), input, _) in <(&mut Look, &Input, &Tag)>::query(registry) {
-        *look += input.gaze;
-    }
-    for (Translation(translation), Look(look), Speed(speed), input, _) in
-        <(&mut Translation, &Look, &Speed, &Input, &Tag)>::query(registry)
-    {
-        *translation += speed
-            * delta_time
-            * (UnitQuaternion::from_axis_angle(
-                &Unit::new_normalize(SVector::<f32, 3>::new(0.0, 0.0, 1.0)),
-                look.x,
-            )
-            .to_rotation_matrix()
-                * input.direction);
-    }
+fn common_fixed_tick<Tag: Component + fmt::Debug>(registry: &mut Registry) {
+    
 }
 
+#[profiling::all_functions]
 impl ClientWorld {
     pub fn new() -> Self {
         Self {
@@ -105,15 +93,75 @@ impl ClientWorld {
         }
     }
 
-    pub fn tick(&mut self, registry: &mut Registry, delta_time: f32) {
+    pub fn delta_tick(&mut self, registry: &mut Registry, delta_time: f32) {
+        for (Target(target), Translation(translation)) in
+            <(&Target, &mut Translation)>::query(registry) 
+        {
+            use lerp::Lerp;
+            *translation = PrecisePosition::new(
+                translation.x.lerp(target.x, 0.5),
+                translation.y.lerp(target.y, 0.5),
+                translation.z.lerp(target.z, 0.5),
+            )
+        }
+    }
+
+    pub fn fixed_tick(&mut self, registry: &mut Registry, delta_time: f32) {
         let client = registry.resource_mut::<Client>().unwrap();
         let _ = client.recv();
 
-        common_tick::<ClientTag>(registry, delta_time);
-        
-        if let Some((input, _)) = <(&Input, &Observer)>::query(registry).next() {
-            client.send(Message::Input(input.clone())).unwrap();
+        common_fixed_tick::<ClientTag>(registry);
+
+        if let Some((inputs, _)) = <(&Inputs, &Observer)>::query(registry).next() {
+            client.send(Message::Inputs(inputs.clone())).unwrap();
         }
+        for (Target(translation), Look(look), Speed(speed), inputs, _) in <(&mut Target, &mut Look, &Speed,  &mut Inputs, &ClientTag)>::query(registry) {
+            let Some((mut prev_time, _)) = inputs.state.get(0).copied() else {
+                continue;
+            };
+            let mut input;
+            loop {
+                input = inputs.state.get(0).map(|(_, b)| *b).unwrap();
+                
+                let curr_time = if let Some((time, _)) = inputs.state.get(1) {
+                    *time
+                } else {
+                    SystemTime::now()
+                };
+
+                if inputs.state.len() > 1 {
+                    inputs.state.pop_front();
+                }
+
+                let delta_time = curr_time.duration_since(prev_time).unwrap().as_secs_f32();
+                prev_time = curr_time;
+
+                *look += input.gaze;
+
+                let direction = if input.direction.magnitude() == 0.0 {
+                    Default::default()
+                } else {
+                    input.direction.normalize()
+                };
+
+                *translation += speed
+                    * delta_time
+                    * (UnitQuaternion::from_axis_angle(
+                        &Unit::new_normalize(SVector::<f32, 3>::new(0.0, 0.0, 1.0)),
+                        look.x,
+                    )
+                    .to_rotation_matrix()
+                        * direction);
+
+                if inputs.state.len() == 1 {
+                    break;
+                }
+            }
+            inputs.state[0].1.gaze = Default::default();
+            inputs.state[0].0 = SystemTime::now();
+        }
+        
+        
         let mut remove_change = None;
         if let Some((entity, change, _)) = <(Entity, &Change, &Observer)>::query(registry).next() {
             client.send(Message::Change(*change)).unwrap();
@@ -122,12 +170,21 @@ impl ClientWorld {
         if let Some(entity) = remove_change {
             registry.remove::<Change>(entity);
         }
-        for message in client.get(|msg| matches!(msg, Message::Chunk(ChunkMessage::Activated(_)))) {
-            let Message::Chunk(ChunkMessage::Activated(ChunkActivated { position, lod, mut bytes })) = message else {
+        for message in client.get(|(msg, _)| matches!(msg, Message::Correct(Correct::Target(_)))) {
+            let Message::Correct(Correct::Target(target)) = message.0 else {
+                continue;
+            };
+            let Some((rep_target, _)) = <(&mut Target, &Main)>::query(registry).next() else {
+                continue;
+            };
+            *rep_target = target;
+        }
+        for message in client.get(|(msg, _)| matches!(msg, Message::Chunk(ChunkMessage::Activated(_)))) {
+            let Message::Chunk(ChunkMessage::Activated(ChunkActivated { position, lod, bytes })) = message.0 else {
                 continue;
             };
 
-            let mut chunk = Chunk::new(lod);
+            let mut chunk = ClientChunk::new(lod);
 
             /*let neighbors_present = 0;
             neighbors(position, |neighbor, dir, dimension, normal| {
@@ -144,8 +201,11 @@ impl ClientWorld {
                 *neighbors_present += 1;
             });*/
 
-            let blocks = rle::decode(bytes);
+            let mut blocks = rle::decode(bytes);
 
+            for i in 0..dbg!(chunk_size(chunk.lod_level())) {
+                chunk.get_mut(i).block = blocks[i];
+            }
             let new_state = ChunkState::Active {
                 chunk, /*neighbors: neighbors_present*/
             };
@@ -154,41 +214,31 @@ impl ClientWorld {
                 .get_chunks_mut()
                 .insert(position, new_state);
 
-            let blocks = blocks    .into_iter()
-                .enumerate()
-                .map(|(i, b)| (position, Chunk::delinearize(Chunk::axis(lod), i), b))
-                .collect::<Vec<_>>();
-
-
-            self.dimension_state.set_blocks(&blocks);
-
             self.dimension_state
                 .get_chunk_activations_mut()
                 .insert(position);
         }
-        for message in client.get(|msg| matches!(msg, Message::Chunk(ChunkMessage::Updated(_)))) {
-            let Message::Chunk(ChunkMessage::Updated(ChunkUpdated { position, mut bytes })) = message else {
+        for message in client.get(|(msg, _)| matches!(msg, Message::Chunk(ChunkMessage::Updated(_)))) {
+            let Message::Chunk(ChunkMessage::Updated(ChunkUpdated { position, bytes })) = message.0 else {
                 continue;
             };
 
-            let lod = match self.dimension_state.get_chunks().get(&position) {
-                Some(ChunkState::Active { chunk }) => chunk.lod_level(),
+            let chunk = match self.dimension_state.get_chunks_mut().get_mut(&position) {
+                Some(ChunkState::Active { chunk }) => chunk,
                 _ => continue,
             };
 
-            let mut blocks = rle::decode(bytes)
-                .into_iter()
-                .enumerate()
-                .map(|(i, b)| (position, Chunk::delinearize(Chunk::axis(lod), i), b))
-                .collect::<Vec<_>>();
+            let mut blocks = rle::decode(bytes);
 
-            self.dimension_state.set_blocks(&blocks);
+            for i in 0..chunk_size(chunk.lod_level()) {
+                chunk.get_mut(i).block = blocks[i];
+            }
 
             self.dimension_state
                 .get_chunk_updated_mut()
                 .insert(position);
         }
-        for position in self.dimension_state.get_chunk_updated_mut().iter().copied().collect::<Vec<_>>() {
+        for position in self.dimension_state.get_chunk_updated().iter().chain(self.dimension_state.get_chunk_activations().iter()).copied().collect::<Vec<_>>() {
             let Some(mut state) = self.dimension_state.get_chunks_mut().get_mut(&position) else {
                 continue;
             };
@@ -197,15 +247,14 @@ impl ClientWorld {
                 ChunkState::Stasis { chunk, .. } => chunk,
                 _ => continue,
             };
-            for i in 0..Chunk::size(chunk.lod_level()) {
-                let visible_mask = calc_block_visible_mask_inside_chunk(&chunk, i);
-                let ambient = calc_ambient_inside_chunk(&chunk, i);
+            for i in 0..chunk_size(chunk.lod_level()) {
+                let visible_mask = calc_block_visible_mask_inside_chunk(chunk, i);
+                let ambient = calc_ambient_inside_chunk(chunk, i);
                 let mut info = chunk.get_mut(i);
                 info.visible_mask = visible_mask;
                 info.ambient = ambient;
             }
         }
-        self.dimension_state.flush_set_blocks();
     }
 
     pub fn display(&mut self, registry: &mut Registry) {
@@ -279,13 +328,13 @@ impl ClientWorld {
 }
 
 pub struct ServerWorld {
-    dimension_state: DimensionState,
+    dimension_state: DimensionState<ServerChunk>,
     pre_generator: (Sender<GenReq>, Receiver<GenReq>),
     post_generator: (Sender<GenResp>, Receiver<GenResp>),
     _generators: Vec<JoinHandle<()>>,
     load_chunk_order: VecDeque<ChunkPosition>,
 }
-
+#[profiling::all_functions]
 impl ServerWorld {
     pub fn new() -> Self {
         let (pre_generator_tx, pre_generator_rx) = channel::unbounded();
@@ -314,24 +363,74 @@ impl ServerWorld {
         }
     }
 
-    pub fn tick(&mut self, registry: &mut Registry, delta_time: f32) {
+    pub fn delta_tick(&mut self, registry: &mut Registry, delta_time: f32) {
+        
+    }
+
+    pub fn fixed_tick(&mut self, registry: &mut Registry, delta_time: f32) {
         let server = registry.resource_mut::<Server>().unwrap();
         if let Err(e) = server.recv() {
             println!("{:?}", e);
             return;
         };
 
-        common_tick::<ServerTag>(registry, delta_time);
+        common_fixed_tick::<ServerTag>(registry);
 
         let Ok(new_clients) = server.accept() else {
             panic!("?");
         };
 
+        for (Translation(translation), Look(look), Speed(speed), inputs, _) in <(&mut Translation, &mut Look, &Speed, &mut Inputs, &ServerTag)>::query(registry) {
+            let Some((mut prev_time, _)) = inputs.state.get(0).copied() else {
+                continue;
+            };
+            let mut input;
+            loop {
+                input = inputs.state.get(0).map(|(_, b)| *b).unwrap();
+                
+                let curr_time = if let Some((time, _)) = inputs.state.get(1) {
+                    *time
+                } else {
+                    SystemTime::now()
+                };
+                
+                if inputs.state.len() > 1 {
+                    inputs.state.pop_front();
+                }
+
+                let delta_time = curr_time.duration_since(prev_time).unwrap().as_secs_f32();
+                prev_time = curr_time;
+
+                *look += input.gaze;
+
+                let direction = if input.direction.magnitude() == 0.0 {
+                    Default::default()
+                } else {
+                    input.direction.normalize()
+                };
+
+                *translation += speed
+                    * delta_time
+                    * (UnitQuaternion::from_axis_angle(
+                        &Unit::new_normalize(SVector::<f32, 3>::new(0.0, 0.0, 1.0)),
+                        look.x,
+                    )
+                    .to_rotation_matrix()
+                        * direction);
+                        
+                if inputs.state.len() == 1 {
+                    break;
+                }
+            }
+            inputs.state[0].1.gaze = Default::default();
+            inputs.state[0].0 = SystemTime::now();
+        }
+
         for &client in &new_clients {
             let entity = registry.spawn();
             registry.insert(entity, Translation(SVector::<f32, 3>::new(0.0, 0.0, 20.0)));
             registry.insert(entity, Look::default());
-            registry.insert(entity, Input::default());
+            registry.insert(entity, Inputs::default());
             registry.insert(
                 entity,
                 Loader {
@@ -360,7 +459,7 @@ impl ServerWorld {
                     })
             {
                 let mut blocks = vec![];
-                for i in 0..Chunk::size(chunk.lod_level()) {
+                for i in 0..chunk_size(0) {
                     blocks.push(chunk.get(i).block);
                 }
                 let blocks = rle::encode(&blocks);
@@ -369,27 +468,28 @@ impl ServerWorld {
                         client,
                         Message::Chunk(ChunkMessage::Activated(ChunkActivated {
                             position,
-                            lod: chunk.lod_level(),
+                            lod: 0,
                             bytes: blocks,
                         })),
                     )
                     .unwrap();
             }
         }
-
-        for (reg_input, client) in <(&mut Input, &ClientId)>::query(registry) {
-            for message in server.get(*client, |msg| matches!(msg, Message::Input(input))) {
-                let Message::Input(input) = message else {
+        for (rep_inputs, client) in <(&mut Inputs, &ClientId)>::query(registry) {
+            for (message, info) in server.get(*client, |(msg, _)| matches!(msg, Message::Inputs(input))) {
+                let Message::Inputs(inputs) = message else {
                     continue;
                 };
-                *reg_input = input;
+                *rep_inputs = inputs;
             }
         }
-
+        for (translation, client) in <(&Translation, &ClientId)>::query(registry) {
+            server.send(*client, Message::Correct(Correct::Target(Target(translation.0))));
+        }
         let mut add_change = HashMap::new();
         for (entity, client) in <(Entity, &ClientId)>::query(registry) {
-            for message in server.get(*client, |msg| matches!(msg, Message::Change(_))) {
-                let Message::Change(change) = message else {
+            for message in server.get(*client, |(msg, _)| matches!(msg, Message::Change(_))) {
+                let Message::Change(change) = message.0 else {
                     continue;
                 };
                 add_change.insert(entity,change);
@@ -406,7 +506,7 @@ impl ServerWorld {
                     Place(_) => raycast::Target::Backstep,
                     Break(_) => raycast::Target::Position,
                 };
-                let Some((chunk_position, local_position)) = self.dimension_state.raycast(target, *translation, *look) else {
+                let Some((chunk_position, local_position)) = self::dimension::raycast(&mut self.dimension_state, target, *translation, *look) else {
                     continue;
                 };
 
@@ -447,7 +547,7 @@ impl ServerWorld {
                 }
                 for (position, chunk) in &activations {
                     let mut blocks = vec![];
-                    for i in 0..Chunk::size(chunk.lod_level()) {
+                    for i in 0..chunk_size(0) {
                         blocks.push(chunk.get(i).block);
                     }
                     let bytes = rle::encode(&blocks);
@@ -456,7 +556,7 @@ impl ServerWorld {
                             client,
                             Message::Chunk(ChunkMessage::Activated(ChunkActivated {
                                 position: *position,
-                                lod: chunk.lod_level(),
+                                lod: 0,
                                 bytes,
                             })),
                         )
@@ -483,7 +583,7 @@ impl ServerWorld {
 
                 for (position, chunk) in &updated {
                     let mut blocks = vec![];
-                    for i in 0..Chunk::size(chunk.lod_level()) {
+                    for i in 0..chunk_size(0) {
                         blocks.push(chunk.get(i).block);
                     }
                     let bytes = rle::encode(&blocks);
@@ -531,6 +631,9 @@ impl ServerWorld {
     }
 
     pub fn load(&mut self, registry: &mut Registry) {
+        {
+            profiling::scope!("calc_load_order");
+
         for (
             Translation(translation_f),
             Loader {
@@ -590,6 +693,9 @@ impl ServerWorld {
                 }
             }
         }
+    }
+    {
+        profiling::scope!("start_gen");
         let (pre_generator_tx, _) = &self.pre_generator;
         for position in self.load_chunk_order.drain(..) {
             let lod = 0;
@@ -600,6 +706,7 @@ impl ServerWorld {
                 .get_chunks_mut()
                 .insert(position, ChunkState::Generating);
         }
+    }
         /*for (entity, chunk, Translation(translation), _) in
             <(Entity, &Chunk, &Translation, Without<Generating>)>::query(registry)
         {
@@ -626,49 +733,37 @@ impl ServerWorld {
             registry.insert(entity, Generating);
         }*/
         {
+            profiling::scope!("recv_gen");
             let (_, post_generator_rx) = &self.post_generator;
-            while let Ok(GenResp { position, set, lod }) = post_generator_rx.try_recv() {
-                self.dimension_state.get_chunks_mut().insert(
-                    position,
-                    ChunkState::Stasis {
-                        chunk: Chunk::new(lod),
-                        neighbors: 0,
-                    },
-                );
-                self.dimension_state
-                    .set_blocks(&set.into_iter().collect::<Vec<_>>());
-
-                let Some(mut state) = self.dimension_state.get_chunks_mut().remove(&position) else {
-                    continue;
-                };
-
-                let ChunkState::Stasis { neighbors: neighbors_present, chunk: my_chunk } = &mut state else {
-                    continue;           
-                };
-
-                neighbors(position, |neighbor, dir, dimension, normal| {
-                    let mut their_chunk =
+            let mut iter = iter::repeat_with(|| post_generator_rx.try_recv()).take(2);
+            while let Some(GenResp { position, chunk, lod }) = iter.next().map(Result::ok).flatten() {
+                let mut neighbors_present = 0;
+                neighbors(position, |neighbor, _, _, _| {
                         match self.dimension_state.get_chunks_mut().get_mut(&neighbor) {
-                            Some(ChunkState::Stasis { neighbors, chunk }) => {
+                            Some(ChunkState::Stasis { neighbors, .. }) => {
                                 *neighbors = (*neighbors + 1).clamp(0, 6);
-                                chunk
                             }
-                            Some(ChunkState::Active { chunk }) => chunk,
+                            Some(ChunkState::Active { .. }) => {},
                             _ => return,
                         };
 
-                    *neighbors_present += 1;
+                    neighbors_present += 1;
                 });
 
-                drop(my_chunk);
-                drop(neighbors_present);
-                self.dimension_state
-                    .get_chunks_mut()
-                    .insert(position, state);
+                self.dimension_state.get_chunks_mut().insert(
+                    position,
+                    ChunkState::Stasis {
+                        chunk,
+                        neighbors: neighbors_present,
+                    },
+                );
+                self.dimension_state.get_chunk_updated_mut().insert(position);
             }
         }
 
-        let mut activate = HashSet::new();
+        {
+            profiling::scope!("activate");
+            let mut activate = HashSet::new();
         for (position, state) in self
             .dimension_state
             .get_chunks()
@@ -697,7 +792,7 @@ impl ServerWorld {
                 .get_chunk_activations_mut()
                 .insert(position);
         }
-
+    }
     }
 }
 
@@ -708,19 +803,22 @@ pub struct GenReq {
 
 pub struct GenResp {
     position: SVector<isize, 3>,
-    set: HashSet<(ChunkPosition, LocalPosition, Block)>,
+    chunk: ServerChunk,
     lod: usize,
 }
 
 pub fn generator(post_generator_tx: Sender<GenResp>, pre_generator_rx: Receiver<GenReq>) {
+    profiling::register_thread!("generator");
     loop {
         let Ok(GenReq { position, lod }) = pre_generator_rx.try_recv() else {
             thread::sleep(Duration::from_millis(1));
             continue;
         };
 
-        let set = gen(position, lod);
+        profiling::scope!("gen");
 
-        let _ = post_generator_tx.send(GenResp { position, set, lod });
+        let chunk = gen(position, lod);
+
+        let _ = post_generator_tx.send(GenResp { position, chunk, lod });
     }
 }

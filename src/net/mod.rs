@@ -1,4 +1,10 @@
-use crate::{world::{block::Block, ChunkPosition, ClientWorld, LocalPosition, WorldPosition, raycast, entity::Change}, input::Input};
+use crate::{
+    input::{Input, Inputs},
+    world::{
+        block::Block, entity::{Change, Target}, raycast, ChunkPosition, ClientWorld, LocalPosition,
+        WorldPosition,
+    },
+};
 use rand::thread_rng;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -6,7 +12,7 @@ use std::{
     mem,
     net::*,
     thread,
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 pub const SERVER_PORT: u16 = 41235;
@@ -28,11 +34,32 @@ pub enum Error {
     Timeout,
 }
 
+#[derive(Debug)]
 pub struct ClientTag;
+#[derive(Debug)]
 pub struct ServerTag;
 
 #[derive(Serialize, Deserialize)]
-struct Header {}
+struct Header {
+    send_time_epoch_ms: u128,
+}
+
+pub struct Info {
+    pub send_time_epoch_ms: u128,
+    pub recv_time_epoch_ms: u128,
+}
+
+impl Info {
+    fn new(packet: &Packet) -> Self {
+        Self {
+            send_time_epoch_ms: packet.header.send_time_epoch_ms,
+            recv_time_epoch_ms: SystemTime::now()
+                .duration_since(UNIX_EPOCH.into())
+                .unwrap()
+                .as_millis(),
+        }
+    }
+}
 
 #[derive(Serialize, Deserialize)]
 struct Packet {
@@ -62,11 +89,17 @@ pub enum ChunkMessage {
 }
 
 #[derive(Serialize, Deserialize, Clone)]
+pub enum Correct {
+    Target(Target)
+}
+
+#[derive(Serialize, Deserialize, Clone)]
 pub enum Message {
     Handshake,
     Chunk(ChunkMessage),
-    Input(Input),
+    Inputs(Inputs),
     Change(Change),
+    Correct(Correct),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -74,7 +107,7 @@ pub struct ClientId(usize);
 
 pub struct Client {
     socket: UdpSocket,
-    messages: Vec<Message>,
+    messages: Vec<(Message, Info)>,
 }
 
 pub struct Connection {
@@ -82,6 +115,7 @@ pub struct Connection {
     start: Instant,
 }
 
+#[profiling::all_functions]
 impl Connection {
     pub fn check_connection(mut self) -> Result<Result<Client, Error>, Self> {
         let recv_result = self.client.as_mut().unwrap().recv();
@@ -102,12 +136,12 @@ impl Connection {
             self.client
                 .as_mut()
                 .unwrap()
-                .get(|m| matches!(m, Message::Handshake)),
+                .get(|m| matches!(m, (Message::Handshake, _))),
         );
         if messages.len() >= 1 {
             let message = messages.drain(0..1).next().unwrap();
             use Message::*;
-            match message {
+            match message.0 {
                 Handshake => {
                     return Ok(Ok(self.client.take().unwrap()));
                 }
@@ -122,6 +156,7 @@ impl Connection {
     }
 }
 
+#[profiling::all_functions]
 impl Client {
     pub fn connect<A: ToSocketAddrs>(addresses: A) -> Result<Connection, Error> {
         let server_address = addresses
@@ -161,7 +196,12 @@ impl Client {
 
     pub fn send(&self, message: Message) -> Result<(), Error> {
         let packet = Packet {
-            header: Header {},
+            header: Header {
+                send_time_epoch_ms: SystemTime::now()
+                    .duration_since(UNIX_EPOCH.into())
+                    .unwrap()
+                    .as_millis(),
+            },
             message,
         };
 
@@ -181,12 +221,13 @@ impl Client {
             let json = String::from_utf8(bytes).map_err(|_| Error::FailedToParse)?;
             let packet =
                 serde_json::from_str::<Packet>(&json).map_err(|_| Error::FailedToDeserialize)?;
-            self.messages.push(packet.message);
+            self.messages
+                .push((packet.message.clone(), Info::new(&packet)));
         }
         Ok(())
     }
 
-    pub fn get<F: Fn(&Message) -> bool>(&mut self, predicate: F) -> Vec<Message> {
+    pub fn get<F: Fn(&(Message, Info)) -> bool>(&mut self, predicate: F) -> Vec<(Message, Info)> {
         let mut messages = mem::take(&mut self.messages);
         let (target, rest) = messages.into_iter().partition(predicate);
         self.messages = rest;
@@ -201,10 +242,11 @@ pub struct Server {
     start: HashMap<ClientId, Instant>,
     active: HashSet<ClientId>,
     heartbeat: HashMap<ClientId, Instant>,
-    messages: HashMap<ClientId, Vec<Message>>,
+    messages: HashMap<ClientId, Vec<(Message, Info)>>,
     socket: UdpSocket,
 }
 
+#[profiling::all_functions]
 impl Server {
     pub fn bind() -> Result<Self, Error> {
         let socket = UdpSocket::bind(&format!("0.0.0.0:{}", SERVER_PORT))
@@ -259,7 +301,7 @@ impl Server {
             .collect::<HashSet<_>>();
         let mut activated = HashSet::new();
         for client in potential {
-            let messages = self.get(client, |m| matches!(m, Message::Handshake));
+            let messages = self.get(client, |m| matches!(m, (Message::Handshake, _)));
 
             if messages.len() >= 1 {
                 self.send(client, Message::Handshake)
@@ -283,15 +325,20 @@ impl Server {
             Err(Error::ClientDoesNotExist)?
         };
         let packet = Packet {
-            header: Header {},
+            header: Header {
+                send_time_epoch_ms: SystemTime::now()
+                    .duration_since(UNIX_EPOCH.into())
+                    .unwrap()
+                    .as_millis(),
+            },
             message,
         };
 
         let json = serde_json::to_string(&packet).map_err(|_| Error::FailedToSerialize)?;
         let bytes = json.into_bytes();
-        self.socket.send_to(&bytes, addr).map_err(|e| {
-            Error::FailedToSend
-        })?;
+        self.socket
+            .send_to(&bytes, addr)
+            .map_err(|e| Error::FailedToSend)?;
 
         Ok(())
     }
@@ -312,7 +359,7 @@ impl Server {
             self.messages
                 .entry(client)
                 .or_default()
-                .push(packet.message);
+                .push((packet.message.clone(), Info::new(&packet)));
             self.heartbeat
                 .entry(client)
                 .and_modify(|last| *last = Instant::now())
@@ -321,7 +368,11 @@ impl Server {
         Ok(())
     }
 
-    pub fn get<F: Fn(&Message) -> bool>(&mut self, client: ClientId, predicate: F) -> Vec<Message> {
+    pub fn get<F: Fn(&(Message, Info)) -> bool>(
+        &mut self,
+        client: ClientId,
+        predicate: F,
+    ) -> Vec<(Message, Info)> {
         let Some(client_messages) = self.messages.get_mut(&client) else {
             return vec![];
         };

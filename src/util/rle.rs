@@ -17,10 +17,11 @@ pub fn encode(blocks: &[Block]) -> Vec<u8> {
             continue;
         }
         if curr != blocks[cursor] || cursor + 1 >= blocks.len() {
+            if curr == blocks[cursor] {
+                count += 1;
+            }
             data.extend_from_slice(&count.to_be_bytes());
-            data.extend_from_slice(
-                &unsafe { mem::transmute::<_, u16>(curr) }.to_be_bytes(),
-            );
+            data.extend_from_slice(&unsafe { mem::transmute::<_, u16>(curr) }.to_be_bytes());
             if cursor + 1 < blocks.len() {
                 count = 1;
                 curr = blocks[cursor];
@@ -36,8 +37,8 @@ pub fn decode(mut bytes: Vec<u8>) -> Vec<Block> {
     assert!(bytes.len() % 6 == 0);
     let mut blocks = Vec::with_capacity(bytes.len() / mem::size_of::<Block>() / 3);
     loop {
-        let (y,x) = (bytes.pop().unwrap(), bytes.pop().unwrap());
-        let (d,c,b,a) = (
+        let (y, x) = (bytes.pop().unwrap(), bytes.pop().unwrap());
+        let (d, c, b, a) = (
             bytes.pop().unwrap(),
             bytes.pop().unwrap(),
             bytes.pop().unwrap(),

@@ -3,7 +3,7 @@ use std::collections::HashSet;
 use nalgebra::SVector;
 use serde_derive::{Deserialize, Serialize};
 
-use super::{block::Block, ChunkPosition};
+use super::{block::Block, ChunkPosition, PrecisePosition};
 use crate::input::Input;
 use band::Entity;
 
@@ -25,6 +25,9 @@ pub struct Speed(pub f32);
 pub struct Observer {
     pub view_distance: usize,
 }
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct Target(pub PrecisePosition);
 
 pub struct Loader {
     pub load_distance: usize,

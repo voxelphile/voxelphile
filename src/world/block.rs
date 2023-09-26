@@ -1,11 +1,14 @@
+use std::default;
+
 use serde::{Deserialize, Serialize};
 use strum_macros::EnumIter;
 
 use crate::world::structure::Direction;
 
-#[derive(EnumIter, Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Default, EnumIter, Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[repr(u16)]
 pub enum Block {
+    #[default]
     Air,
     Stone,
     Machine,

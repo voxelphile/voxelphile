@@ -1,7 +1,7 @@
 use std::{
     cell::RefCell,
     collections::{HashMap, HashSet},
-    marker::PhantomData,
+    marker::PhantomData, ops::{Deref, DerefMut},
 };
 
 use band::{Entity, QueryExt, Registry};
@@ -13,7 +13,7 @@ use strum_macros::EnumIter;
 
 use crate::{
     graphics::{vertex::BlockVertex, BlockMesh},
-    world::{entity::Electric, LocalPosition},
+    world::{entity::Electric, LocalPosition}, net::Server,
 };
 
 use super::{block::Block, ChunkPosition};
@@ -43,30 +43,46 @@ impl Direction {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
-pub struct BlockInfo {
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ClientBlockInfo {
     pub block: Block,
     pub visible_mask: u8,
     pub ambient: [u8; 6],
 }
 
-pub trait BlockRef {
-    fn info(&self) -> &BlockInfo;
-}
-
-pub trait BlockMut {
-    fn info(&mut self) -> &mut BlockInfo;
-}
-
-impl<'a> BlockRef for &'a BlockInfo {
-    fn info(&self) -> &BlockInfo {
-        self
+impl<'a> BlockRef for &'a ClientBlockInfo {
+    fn block_ref(&self) -> &Block {
+        &self.block
     }
 }
 
-impl<'a> BlockMut for &'a mut BlockInfo {
-    fn info(&mut self) -> &mut BlockInfo {
-        self
+impl<'a> BlockMut for &'a mut ClientBlockInfo {
+    fn block_ref(&self) -> &Block {
+        &self.block
+    }
+    fn block_mut(&mut self) -> &mut Block {
+        &mut self.block
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ServerBlockInfo {
+    pub block: Block,
+    pub rotation: u8,
+}
+
+impl<'a> BlockRef for &'a ServerBlockInfo {
+    fn block_ref(&self) -> &Block {
+        &self.block
+    }
+}
+
+impl<'a> BlockMut for Mut<'a> {
+    fn block_ref(&self) -> &Block {
+        &self.block
+    }
+    fn block_mut(&mut self) -> &mut Block {
+        &mut self.block
     }
 }
 
@@ -82,136 +98,107 @@ fn unpack_ambient(dir: Direction, vertex: usize, ambient: [u8; 6]) -> SVector<f3
 pub const CHUNK_AXIS: usize = 32;
 pub const CHUNK_SIZE: usize = CHUNK_AXIS * CHUNK_AXIS * CHUNK_AXIS;
 
-/*
-pub trait Structure {
-    type Ref<'a>: BlockRef
-    where
-        Self: 'a;
-    type Mut<'a>: BlockMut
-    where
-        Self: 'a;
-    fn axis(lod: usize) -> SVector<usize, 3>;
-    fn size(lod: usize) -> usize;
-    fn lod(&self) -> usize;
-    fn contains(&self, _: usize) -> bool {
-        true
-    }
+pub fn chunk_axis(lod: usize) -> SVector<usize, 3> {
+    SVector::<usize, 3>::new(CHUNK_AXIS, CHUNK_AXIS, CHUNK_AXIS) / chunk_lod(lod)
+}
+pub fn chunk_size(lod: usize) -> usize {
+    let axis = chunk_axis(lod);
+    axis.x * axis.y * axis.z
+}
+pub fn chunk_lod(lod: usize) -> usize {
+    2usize.pow(lod as _) as _
+}
+pub fn linearize(axis: SVector<usize, 3>, v: SVector<usize, 3>) -> usize {
+    (v[2] * axis[1] + v[1]) * axis[0] + v[0]
+}
+pub fn delinearize(axis: SVector<usize, 3>, i: usize) -> SVector<usize, 3> {
+    let mut idx = i;
+    let mut v = SVector::<usize, 3>::new(0, 0, 0);
+    v[2] = idx / (axis[0] * axis[1]);
+    idx -= (v[2] * axis[0] * axis[1]);
+    v[1] = idx / axis[0];
+    v[0] = idx % axis[0];
+    v
+}
+
+pub trait BlockRef {
+    fn block_ref(&self) -> &Block;
+}
+
+pub trait BlockMut {
+    fn block_ref(&self) -> &Block;
+    fn block_mut(&mut self) -> &mut Block;
+}
+
+pub trait Chunk {
+    type Ref<'a>: BlockRef where Self: 'a;
+    type Mut<'a>: BlockMut where Self: 'a;
+    fn new(lod: usize) -> Self;
+    fn tick(&mut self);
     fn get<'a>(&'a self, i: usize) -> Self::Ref<'a>;
     fn get_mut<'a>(&'a mut self, i: usize) -> Self::Mut<'a>;
-    fn linearize(axis: SVector<usize, 3>, v: SVector<usize, 3>) -> usize {
-        (v[2] * axis[1] + v[1]) * axis[0] + v[0]
-    }
-    fn delinearize(axis: SVector<usize, 3>, i: usize) -> SVector<usize, 3> {
-        let mut idx = i;
-        let axis = self.axis();
-        let mut v = SVector::<usize, 3>::new(0, 0, 0);
-        v[2] = idx / (axis[0] * axis[1]);
-        idx -= (v[2] * axis[0] * axis[1]);
-        v[1] = idx / axis[0];
-        v[0] = idx % axis[0];
-        v
-    }
-    fn for_each<F: FnMut(usize, &BlockInfo)>(&self, mut f: F) {
-        for i in 0..self.size() {
-            let _ref = self.get(i);
-            (f)(i, _ref.info());
-        }
-    }
-    fn for_each_mut<'a, F: FnMut(usize, &mut BlockInfo) + 'a>(&'a mut self, mut f: F) {
-        for i in 0..self.size() {
-            let mut _mut = self.get_mut(i);
-            (f)(i, _mut.info());
-        }
-    }
-}
-pub struct Blueprint {
-    data: HashMap<SVector<isize, 3>, BlockInfo>,
-    minimum: SVector<isize, 3>,
-    maximum: SVector<isize, 3>,
-}
-
-impl Structure for Blueprint {
-    fn axis(_: usize) -> SVector<usize, 3> {
-        nalgebra::try_convert::<_, SVector<usize, 3>>(self.maximum - self.minimum).unwrap()
-    }
-    fn size(_: usize) -> usize {
-        let axis = self.axis();
-        axis[0] * axis[1] * axis[2]
-    }
-    fn lod(_: usize) -> usize {
+    fn lod_level(&self) -> usize {
         0
     }
-    fn get<'a>(&'a self, i: usize) -> Self::Ref<'a> {
-        let pos = nalgebra::convert::<_, SVector<isize, 3>>(self.delinearize(i)) + self.minimum;
-        self.data
-            .get(&pos)
-            .expect("no block info entry found for position in blueprint")
-    }
-    fn get_mut<'a>(&'a mut self, i: usize) -> Self::Mut<'a> {
-        let pos = nalgebra::convert::<_, SVector<isize, 3>>(self.delinearize(i)) + self.minimum;
-        if !self.data.contains_key(&pos) {
-            self.data.insert(
-                pos,
-                BlockInfo {
-                    block: Block::Air,
-                    visible_mask: 0xFF,
-                    ambient: [0x0; 6],
-                },
-            );
-        }
-        self.data.get_mut(&pos).unwrap()
-    }
-    fn contains(&self, i: usize) -> bool {
-        let pos = nalgebra::convert::<_, SVector<isize, 3>>(self.delinearize(i)) + self.minimum;
-        self.data.contains_key(&pos)
-    }
+}
 
-    fn lod(&self) -> usize {
-        0
-    }
 
-    type Ref<'a> = &'a BlockInfo;
-
-    type Mut<'a> = &'a mut BlockInfo;
-}*/
-
-pub struct Chunk {
+pub struct ClientChunk {
     lod: usize,
-    data: Vec<BlockInfo>,
+    data: Vec<ClientBlockInfo>,
+}
+
+impl Chunk for ClientChunk {
+    type Ref<'a> = &'a ClientBlockInfo;
+    type Mut<'a> = &'a mut ClientBlockInfo;
+    fn new(lod: usize) -> Self {
+        let lod = lod.min(CHUNK_AXIS.ilog2() as usize);
+        let axis = SVector::<usize, 3>::new(CHUNK_AXIS, CHUNK_AXIS, CHUNK_AXIS)
+            / 2usize.pow(lod as _) as usize;
+        Self {
+            lod,
+            data: vec![Default::default(); axis.x * axis.y * axis.z],
+        }
+    }
+    fn tick(&mut self) {
+    }
+
+    fn get<'a>(&'a self, i: usize) -> Self::Ref<'a> {
+        &self.data[i]
+    }
+
+    fn get_mut<'a>(&'a mut self, i: usize) -> Self::Mut<'a> {
+       &mut self.data[i]
+    }
+
+    fn lod_level(&self) -> usize {
+        self.lod
+    }
+}
+pub struct ServerChunk {
+    data: Vec<ServerBlockInfo>,
     tiles: HashMap<Entity, usize>,
     mapping: HashMap<usize, Entity>,
     registry: Registry,
 }
 
-impl Chunk {
-    pub fn new(lod: usize) -> Self {
-        let lod = lod.min(CHUNK_AXIS.ilog2() as usize);
-        let axis = SVector::<usize, 3>::new(CHUNK_AXIS, CHUNK_AXIS, CHUNK_AXIS)
-            / 2usize.pow(lod as _) as usize;
+impl Chunk for ServerChunk {
+    type Ref<'a> = &'a ServerBlockInfo;
+    type Mut<'a> = Mut<'a>;
+    fn new(_: usize) -> Self {
         let registry = Registry::default();
         Self {
-            lod,
-            data: vec![
-                BlockInfo {
-                    block: Block::Air,
-                    visible_mask: 0xFF,
-                    ambient: [0x0; 6]
-                };
-                axis.x * axis.y * axis.z
-            ],
+            data: vec![Default::default(); CHUNK_SIZE],
             tiles: Default::default(),
             mapping: Default::default(),
             registry,
         }
     }
-    pub fn tick(&mut self) {
-        if self.lod != 0 {
-            return;
-        }
+    fn tick(&mut self) {
         for (my_entity, Electric(my_power)) in <(Entity, &mut Electric)>::query(&mut self.registry)
         {
             let my_i = self.tiles[&my_entity];
-            let block = self.get(my_i).block;
+            let block = **self.get(my_i);
             match block {
                 Block::Machine => {
                     if *my_power > 0.0 {
@@ -225,10 +212,10 @@ impl Chunk {
                 _ => {}
             }
             inner_neighbors(
-                Self::delinearize(Self::axis(self.lod), self.tiles[&my_entity]),
-                Self::axis(self.lod),
+                delinearize(chunk_axis(0), self.tiles[&my_entity]),
+                chunk_axis(0),
                 |neighbor, _| {
-                    let Some(&their_entity) = self.mapping.get(&Self::linearize(Self::axis(self.lod), neighbor)) else {
+                    let Some(&their_entity) = self.mapping.get(&linearize(chunk_axis(0), neighbor)) else {
                     return;
                 };
                     let Some(Electric(their_power)) = self.registry.get_mut(their_entity) else {
@@ -241,73 +228,40 @@ impl Chunk {
             );
         }
     }
-    pub fn axis(lod: usize) -> SVector<usize, 3> {
-        SVector::<usize, 3>::new(CHUNK_AXIS, CHUNK_AXIS, CHUNK_AXIS) / Self::lod(lod)
-    }
-    pub fn size(lod: usize) -> usize {
-        let axis = Self::axis(lod);
-        axis.x * axis.y * axis.z
-    }
-    pub fn lod(lod: usize) -> usize {
-        2usize.pow(lod as _) as _
-    }
 
-    pub fn get<'a>(&'a self, i: usize) -> &BlockInfo {
+    fn get<'a>(&'a self, i: usize) -> Self::Ref<'a> {
         &self.data[i]
     }
 
-    pub fn get_mut<'a>(&'a mut self, i: usize) -> Mut<'a> {
+    fn get_mut<'a>(&'a mut self, i: usize) -> Self::Mut<'a> {
         Mut {
-            id: self.data[i].block,
+            id: *self.data[i],
             chunk: self,
             i,
         }
     }
-
-    pub fn linearize(axis: SVector<usize, 3>, v: SVector<usize, 3>) -> usize {
-        (v[2] * axis[1] + v[1]) * axis[0] + v[0]
-    }
-    pub fn delinearize(axis: SVector<usize, 3>, i: usize) -> SVector<usize, 3> {
-        let mut idx = i;
-        let mut v = SVector::<usize, 3>::new(0, 0, 0);
-        v[2] = idx / (axis[0] * axis[1]);
-        idx -= (v[2] * axis[0] * axis[1]);
-        v[1] = idx / axis[0];
-        v[0] = idx % axis[0];
-        v
-    }
-    pub fn for_each<F: FnMut(usize, &BlockInfo)>(&self, mut f: F) {
-        for i in 0..Self::size(self.lod) {
-            let _ref = self.get(i);
-            (f)(i, _ref.info());
-        }
-    }
-    pub fn for_each_mut<'a, F: FnMut(usize, &mut BlockInfo) + 'a>(&'a mut self, mut f: F) {
-        for i in 0..Self::size(self.lod) {
-            let mut _mut = self.get_mut(i);
-            (f)(i, _mut.info());
-        }
-    }
-
-    pub(crate) fn lod_level(&self) -> usize {
-        self.lod
-    }
 }
 
 pub struct Mut<'a> {
-    chunk: &'a mut Chunk,
+    chunk: &'a mut ServerChunk,
     id: Block,
     i: usize,
 }
 
-impl<'a> BlockMut for Mut<'a> {
-    fn info(&mut self) -> &mut BlockInfo {
-        &mut *self
+impl ops::Deref for ServerBlockInfo {
+    type Target = Block;
+    fn deref(&self) -> &Self::Target {
+        &self.block
+    }
+}
+impl ops::DerefMut for ServerBlockInfo {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.block
     }
 }
 
 impl<'a> ops::Deref for Mut<'a> {
-    type Target = BlockInfo;
+    type Target = ServerBlockInfo;
     fn deref(&self) -> &Self::Target {
         &self.chunk.data[self.i]
     }
@@ -321,7 +275,7 @@ impl<'a> ops::DerefMut for Mut<'a> {
 
 impl<'a> Drop for Mut<'a> {
     fn drop(&mut self) {
-        let curr = self.chunk.data[self.i].block;
+        let curr = *self.chunk.data[self.i];
         if self.id != curr {
             if let Some(&entity) = self.chunk.mapping.get(&self.i) {
                 self.chunk.registry.despawn(entity);
@@ -390,14 +344,17 @@ fn inner_neighbors<F: FnMut(SVector<usize, 3>, Direction)>(
     })
 }
 
-pub fn calc_block_visible_mask_inside_chunk(s: &Chunk, i: usize) -> u8 {
+pub fn calc_block_visible_mask_inside_chunk(s: &ClientChunk, i: usize) -> u8 {
     let mut mask = 0xFF;
     inner_neighbors(
-        Chunk::delinearize(Chunk::axis(s.lod), i),
-        Chunk::axis(s.lod),
+        delinearize(chunk_axis(s.lod), i),
+        chunk_axis(s.lod),
         |neighbor, dir| {
-            let j = Chunk::linearize(Chunk::axis(s.lod), neighbor);
-            if s.get(j).info().block.is_opaque() {
+            let j = linearize(
+                chunk_axis(s.lod),
+                neighbor,
+            );
+            if s.get(j).block.is_opaque() {
                 mask &= !(1 << dir as u8);
             } else {
                 mask |= 1 << dir as u8;
@@ -439,10 +396,10 @@ fn voxel_ao<F: Fn(SVector<isize, 3>) -> bool>(
     )
 }
 
-pub fn calc_ambient_inside_chunk(s: &Chunk, i: usize) -> [u8; 6] {
+pub fn calc_ambient_inside_chunk(s: &ClientChunk, i: usize) -> [u8; 6] {
     let mut ambient_values = [0xFF; 6];
-    let position = Chunk::delinearize(Chunk::axis(s.lod), i);
-    let axis = Chunk::axis(s.lod);
+    let position = delinearize(chunk_axis(s.lod_level()), i);
+    let axis = chunk_axis(s.lod_level());
     inner_neighbors(position, axis, |neighbor, dir| {
         let neighbor = nalgebra::convert::<_, SVector<isize, 3>>(neighbor);
         let position = nalgebra::convert::<_, SVector<isize, 3>>(position);
@@ -460,7 +417,10 @@ pub fn calc_ambient_inside_chunk(s: &Chunk, i: usize) -> [u8; 6] {
                     || position[2] >= axis.z as _;
 
                 let position = nalgebra::try_convert::<_, SVector<usize, 3>>(position).unwrap();
-                !outside && s.get(Chunk::linearize(axis, position)).block.is_opaque()
+                !outside
+                    && s.get(linearize(axis, position))
+                        .block
+                        .is_opaque()
             },
         );
         ambient_values[dir as u8 as usize] = (3 - ambient_data.x)
@@ -470,14 +430,14 @@ pub fn calc_ambient_inside_chunk(s: &Chunk, i: usize) -> [u8; 6] {
     });
     ambient_values
 }
-
+/* 
 pub fn calc_and_set_ambient_between_chunk_neighbors(
     registry: &mut Registry,
     chunks: &HashMap<ChunkPosition, Entity>,
     target: ChunkPosition,
 ) {
     let min = target - ChunkPosition::new(1, 1, 1);
-    let mut chunk_refs = Vec::<&Chunk>::with_capacity(27);
+    let mut chunk_refs = Vec::<&Chunk<ClientBlockInfo>>::with_capacity(27);
     for i in 0..27 {
         let x;
         let y;
@@ -490,14 +450,25 @@ pub fn calc_and_set_ambient_between_chunk_neighbors(
             x = idx % 3;
         }
         let pos = min + ChunkPosition::new(x as _, y as _, z as _);
-        chunk_refs.push(registry.get::<Chunk>(chunks[&pos]).unwrap());
+        chunk_refs.push(
+            registry
+                .get::<Chunk<ClientBlockInfo>>(chunks[&pos])
+                .unwrap(),
+        );
     }
     let target_chunk = chunk_refs[27 / 2];
-    let target_axis = Chunk::axis(target_chunk.lod);
+    let target_axis = chunk_axis(target_chunk.lod);
     let mut all_ambient_values =
-        Vec::<Option<[Option<u8>; 6]>>::with_capacity(Chunk::size(Chunk::lod(target_chunk.lod)));
-    for i in 0..Chunk::size(target_chunk.lod) {
-        let cpos = Chunk::delinearize(Chunk::axis(chunk_refs[27 / 2].lod), i);
+        Vec::<Option<[Option<u8>; 6]>>::with_capacity(chunk_size(Chunk::<
+            ClientBlockInfo,
+        >::lod(
+            target_chunk.lod,
+        )));
+    for i in 0..chunk_size(target_chunk.lod) {
+        let cpos = delinearize(
+            chunk_axis(chunk_refs[27 / 2].lod),
+            i,
+        );
         let x = cpos.x as usize;
         let y = cpos.y as usize;
         let z = cpos.z as usize;
@@ -534,15 +505,18 @@ pub fn calc_and_set_ambient_between_chunk_neighbors(
                         let diff = chunk_position - min;
                         let i = (diff.z as usize * 3 + diff.y as usize) * 3 + diff.x as usize;
                         let chunk = chunk_refs[i];
-                        let chunk_axis = Chunk::axis(chunk.lod);
-                        position /= Chunk::lod(chunk.lod) as isize;
+                        let axis = chunk_axis(chunk.lod);
+                        position /= chunk_lod(chunk.lod) as isize;
                         let local_position = SVector::<usize, 3>::new(
-                            position.x.rem_euclid(chunk_axis.x as _) as usize,
-                            position.y.rem_euclid(chunk_axis.y as _) as usize,
-                            position.z.rem_euclid(chunk_axis.z as _) as usize,
+                            position.x.rem_euclid(axis.x as _) as usize,
+                            position.y.rem_euclid(axis.y as _) as usize,
+                            position.z.rem_euclid(axis.z as _) as usize,
                         );
                         chunk
-                            .get(Chunk::linearize(Chunk::axis(chunk.lod), local_position))
+                            .get(linearize(
+                                axis,
+                                local_position,
+                            ))
                             .block
                             .is_opaque()
                     },
@@ -558,7 +532,9 @@ pub fn calc_and_set_ambient_between_chunk_neighbors(
         all_ambient_values.push(Some(values));
     }
     drop(chunk_refs);
-    let chunk = registry.get_mut::<Chunk>(chunks[&target]).unwrap();
+    let chunk = registry
+        .get_mut::<Chunk<ClientBlockInfo>>(chunks[&target])
+        .unwrap();
     for (i, values) in all_ambient_values
         .into_iter()
         .enumerate()
@@ -573,19 +549,21 @@ pub fn calc_and_set_ambient_between_chunk_neighbors(
             chunk.get_mut(i).ambient[j] = value.unwrap();
         }
     }
-}
+}*/
 
 pub fn calc_block_visible_mask_between_chunks(
-    chunk: &mut Chunk,
-    neighbor: &mut Chunk,
+    chunk: &mut ClientChunk,
+    neighbor: &mut ClientChunk,
     dir: Direction,
     dimension: usize,
     normal: isize,
 ) -> bool {
     let mut changed = false;
-    let max_lod = Chunk::lod(chunk.lod).max(Chunk::lod(neighbor.lod));
-    let min_lod = Chunk::lod(chunk.lod).min(Chunk::lod(neighbor.lod));
-    let (small_chunk, large_chunk, same) = if Chunk::lod(chunk.lod) == min_lod {
+    let max_lod =
+        chunk_lod(chunk.lod).max(chunk_lod(neighbor.lod));
+    let min_lod =
+        chunk_lod(chunk.lod).min(chunk_lod(neighbor.lod));
+    let (small_chunk, large_chunk, same) = if chunk_lod(chunk.lod) == min_lod {
         (neighbor, chunk, false)
     } else {
         (chunk, neighbor, true)
@@ -601,7 +579,7 @@ pub fn calc_block_visible_mask_between_chunks(
             let mut their_block_position = SVector::<usize, 3>::new(0, 0, 0);
 
             my_block_position[dimension] = if normal == normal_eq {
-                Chunk::axis(small_chunk.lod)[dimension] - 1
+                chunk_axis(small_chunk.lod)[dimension] - 1
             } else {
                 0
             };
@@ -611,17 +589,17 @@ pub fn calc_block_visible_mask_between_chunks(
             their_block_position[dimension] = if normal == normal_eq {
                 0
             } else {
-                Chunk::axis(large_chunk.lod)[dimension] - 1
+                chunk_axis(large_chunk.lod)[dimension] - 1
             };
             their_block_position[(dimension + 1) % 3] = u * ratio_lod;
             their_block_position[(dimension + 2) % 3] = v * ratio_lod;
 
-            let mut my_block_ref = small_chunk.get_mut(Chunk::linearize(
-                Chunk::axis(small_chunk.lod),
+            let mut my_block_ref = small_chunk.get_mut(linearize(
+                chunk_axis(small_chunk.lod),
                 my_block_position,
             ));
 
-            let BlockInfo {
+            let ClientBlockInfo {
                 block: my_block,
                 visible_mask: my_visible_mask,
                 ..
@@ -637,11 +615,12 @@ pub fn calc_block_visible_mask_between_chunks(
 
                     let their_real_position = their_block_position + their_offset;
 
-                    let mut their_block_ref = large_chunk.get_mut(Chunk::linearize(
-                        Chunk::axis(large_chunk.lod),
-                        their_real_position,
-                    ));
-                    let BlockInfo {
+                    let mut their_block_ref =
+                        large_chunk.get_mut(linearize(
+                            chunk_axis(large_chunk.lod),
+                            their_real_position,
+                        ));
+                    let ClientBlockInfo {
                         block: their_block,
                         visible_mask: their_visible_mask,
                         ..
@@ -669,11 +648,9 @@ pub fn calc_block_visible_mask_between_chunks(
     changed
 }
 
-pub fn gen(
-    position: SVector<isize, 3>,
-    lod: usize,
-) -> HashSet<(ChunkPosition, LocalPosition, Block)> {
-    let mut set = HashSet::<(ChunkPosition, LocalPosition, Block)>::new();
+pub fn gen(position: SVector<isize, 3>, lod: usize) -> ServerChunk {
+    let mut chunk = ServerChunk::new(lod);
+    let axis = chunk_axis(lod);
 
     let mut alpha = Fbm::<Simplex>::new(400);
     let mut beta = Fbm::<Simplex>::new(500);
@@ -683,7 +660,7 @@ pub fn gen(
 
     let translation = position * CHUNK_AXIS as isize;
 
-    let noise_scale = SVector::<isize, 3>::new(8, 8, 4);
+    let noise_scale = SVector::<isize, 3>::new(8, 8, 8);
     let noise_axis = SVector::<isize, 3>::new(
         (CHUNK_AXIS as isize) / noise_scale[0] + 1,
         (CHUNK_AXIS as isize) / noise_scale[1] + 1,
@@ -706,11 +683,12 @@ pub fn gen(
         }
     }
 
-    for i in 0..Chunk::size(lod) {
+    for i in 0..chunk_size(lod) {
         use lerp::Lerp;
-        let local_position = Chunk::delinearize(Chunk::axis(lod), i);
-        let adjusted_position =
-            nalgebra::convert::<_, SVector<isize, 3>>(local_position) * Chunk::lod(lod) as isize;
+        let local_position =
+            delinearize(chunk_axis(lod), i);
+        let adjusted_position = nalgebra::convert::<_, SVector<isize, 3>>(local_position)
+            * chunk_lod(lod) as isize;
 
         let noise_interp = SVector::<f64, 3>::new(
             (adjusted_position[0] as f64 / noise_scale[0] as f64).fract(),
@@ -772,17 +750,18 @@ pub fn gen(
             noise_interp[2],
         );
 
+        let i = linearize(axis, local_position);
         if density > 0.0 {
-            set.insert((position, local_position, Block::Stone));
+            chunk.get_mut(i).block = Block::Stone;
         } else {
-            set.insert((position, local_position, Block::Air));
+            chunk.get_mut(i).block = Block::Air;
         }
     }
-    set
+    chunk
 }
 
 pub fn cubic_block<F: Fn(Block, Direction) -> Option<u32> + Copy>(
-    info: &BlockInfo,
+    info: &ClientBlockInfo,
     lod: usize,
     position: SVector<usize, 3>,
     block_mapping: F,
@@ -874,25 +853,26 @@ pub fn cubic_block<F: Fn(Block, Direction) -> Option<u32> + Copy>(
 }
 
 pub fn gen_block_mesh<F: Fn(Block, Direction) -> Option<u32> + Copy>(
-    s: &Chunk,
+    s: &ClientChunk,
     block_mapping: F,
 ) -> (Vec<BlockVertex>, Vec<u32>) {
     let mut block_vertices = vec![];
     let mut block_indices = vec![];
 
-    s.for_each(|i, info| {
-        let p = Chunk::delinearize(Chunk::axis(s.lod), i);
-        if info.info().block.is_opaque() {
+    for i in 0..chunk_size(s.lod_level()) {
+        let info = s.get(i);
+        let p = delinearize(chunk_axis(s.lod), i);
+        if (*info).block.is_opaque() {
             cubic_block(
-                info.info(),
-                Chunk::lod(s.lod),
+                info,
+                chunk_lod(s.lod),
                 p,
                 block_mapping,
                 &mut block_vertices,
                 &mut block_indices,
             );
         }
-    });
+    }
     (block_vertices, block_indices)
 }
 
