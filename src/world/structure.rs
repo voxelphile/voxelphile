@@ -151,6 +151,7 @@ pub trait Chunk {
 pub struct ClientChunk {
     lod: usize,
     data: Vec<ClientBlockInfo>,
+    pub inner_dirty: bool,
     pub neighbor_direction_visibility_mask: u8,
     pub neighbor_direction_ao_mask: u8,
 }
@@ -167,6 +168,7 @@ impl Chunk for ClientChunk {
             data: vec![Default::default(); axis.x * axis.y * axis.z],
             neighbor_direction_ao_mask: 0,
             neighbor_direction_visibility_mask: 0,
+            inner_dirty: true,
         }
     }
     fn tick(&mut self) {}

@@ -211,7 +211,30 @@ impl ClientWorld {
             for (position, mut state) in self
                 .dimension_state
                 .get_chunks_mut()
-                .drain_filter(|p, state|  {
+                .iter_mut()
+                .filter(|(_, state)|  {
+                    match state{
+                        ChunkState::Stasis { chunk } => chunk.inner_dirty,
+                        _ => false,
+                    }
+                })
+            {
+                let ChunkState::Stasis { chunk } = &mut state else {
+            continue;
+        };
+            for i in 0..chunk_size(chunk.lod_level()) {
+                let visible_mask = calc_block_visible_mask_inside_chunk(chunk, i);
+                let ambient = calc_ambient_inside_chunk(chunk, i);
+                let mut info = chunk.get_mut(i);
+                info.visible_mask = visible_mask;
+                    info.ambient = ambient;
+            }
+            chunk.inner_dirty = false;
+        }
+            for (position, mut state) in self
+                .dimension_state
+                .get_chunks_mut()
+                .drain_filter(|_, state|  {
                     if !matches!(state, ChunkState::Stasis { .. }) {
                         return false;
                     }
@@ -228,6 +251,12 @@ impl ClientWorld {
                 let ChunkState::Stasis { chunk } = &mut state else {
             continue;
         };
+        let chunk = match &mut state {
+                ChunkState::Active { chunk } => chunk,
+                ChunkState::Stasis { chunk, .. } => chunk,
+                _ => continue,
+            };
+
                 neighbors(position, |neighbor, dir, dimension, normal| {
                     if ((chunk.neighbor_direction_visibility_mask >> dir as u8) & 1) == 1 {
                         return;
@@ -298,7 +327,7 @@ impl ClientWorld {
                     if ((chunk_refs[27 / 2].neighbor_direction_ao_mask >> dir as u8) & 1) == 1 {
                         continue;
                     }
-                    poly_ambient_values[1 << (dir as u8)] =
+                    poly_ambient_values[dir as u8 as usize] =
                         Some(calc_ambient_between_chunk_neighbors(
                             &chunk_refs,
                             chunk_refs[27 / 2].neighbor_direction_ao_mask,
@@ -362,30 +391,6 @@ impl ClientWorld {
             self.dimension_state
                 .get_chunk_updated_mut()
                 .insert(position);
-        }
-        for position in self
-            .dimension_state
-            .get_chunk_updated()
-            .iter()
-            .chain(self.dimension_state.get_chunk_activations().iter())
-            .copied()
-            .collect::<Vec<_>>()
-        {
-            let Some(mut state) = self.dimension_state.get_chunks_mut().get_mut(&position) else {
-                continue;
-            };
-            let chunk = match &mut state {
-                ChunkState::Active { chunk } => chunk,
-                ChunkState::Stasis { chunk, .. } => chunk,
-                _ => continue,
-            };
-            for i in 0..chunk_size(chunk.lod_level()) {
-                let visible_mask = calc_block_visible_mask_inside_chunk(chunk, i);
-                let ambient = calc_ambient_inside_chunk(chunk, i);
-                let mut info = chunk.get_mut(i);
-                info.visible_mask = visible_mask;
-                info.ambient = ambient;
-            }
         }
     }
 
