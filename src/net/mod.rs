@@ -1,8 +1,9 @@
 use crate::{
     input::{Input, Inputs},
     world::{
-        block::Block, entity::{Change, Target}, raycast, ChunkPosition, ClientWorld, LocalPosition,
-        WorldPosition,
+        block::Block,
+        entity::{Change, Target},
+        raycast, ChunkPosition, ClientWorld, LocalPosition, WorldPosition,
     },
 };
 use rand::thread_rng;
@@ -90,7 +91,7 @@ pub enum ChunkMessage {
 
 #[derive(Serialize, Deserialize, Clone)]
 pub enum Correct {
-    Target(Target)
+    Target(Target),
 }
 
 #[derive(Serialize, Deserialize, Clone)]

@@ -23,9 +23,8 @@ use strum::IntoEnumIterator;
 use super::entity::{ChunkTranslation, Dirty, Display, Loader, Look, Observer, Speed, Translation};
 use super::raycast::Ray;
 use super::structure::{
-    calc_block_visible_mask_between_chunks,
-    calc_block_visible_mask_inside_chunk, gen, gen_block_mesh, neighbors, ClientBlockInfo,
-    CHUNK_AXIS,
+    calc_block_visible_mask_between_chunks, calc_block_visible_mask_inside_chunk, gen,
+    gen_block_mesh, neighbors, ClientBlockInfo, CHUNK_AXIS,
 };
 
 pub struct Dimension<C: Chunk> {
@@ -38,72 +37,8 @@ pub struct Dimension<C: Chunk> {
 
 pub enum ChunkState<C: Chunk> {
     Generating,
-    Stasis { neighbors: u8, chunk: C },
+    Stasis { chunk: C },
     Active { chunk: C },
-}
-
-pub fn raycast<'a>(
-    this: &mut Dimension<ServerChunk>,
-    target: raycast::Target,
-    translation: SVector<f32, 3>,
-    look: SVector<f32, 2>,
-) -> Option<(ChunkPosition, LocalPosition)> {
-    let forward_4d = (UnitQuaternion::from_axis_angle(
-        &Unit::new_normalize(SVector::<f32, 3>::new(0.0, 0.0, 1.0)),
-        look.x,
-    ) * UnitQuaternion::from_axis_angle(
-        &Unit::new_normalize(SVector::<f32, 3>::new(1.0, 0.0, 0.0)),
-        look.y,
-    ))
-    .to_homogeneous()
-        * SVector::<f32, 4>::new(0.0, 0.0, -1.0, 0.0);
-    let direction = SVector::<f32, 3>::new(forward_4d.x, forward_4d.y, forward_4d.z);
-    let origin = translation;
-
-    let descriptor = raycast::Descriptor {
-        origin,
-        direction,
-        minimum: SVector::<isize, 3>::new(isize::MIN, isize::MIN, isize::MIN),
-        maximum: SVector::<isize, 3>::new(isize::MAX, isize::MAX, isize::MAX),
-        max_distance: 10.0,
-        chunks: &this.chunks,
-    };
-
-    let mut ray = raycast::start(descriptor);
-
-    while let raycast::State::Traversal { .. } = raycast::drive(&mut ray).state {}
-
-    let Some(raycast::Hit { position, back_step, .. }) = raycast::hit(ray) else {
-    None?
-};
-
-    let target_position = if matches!(target, raycast::Target::Position) {
-        position
-    } else {
-        back_step
-    };
-
-    let chunk_position = SVector::<isize, 3>::new(
-        target_position.x.div_euclid(CHUNK_AXIS as _) as isize,
-        target_position.y.div_euclid(CHUNK_AXIS as _) as isize,
-        target_position.z.div_euclid(CHUNK_AXIS as _) as isize,
-    );
-
-    let chunk = match this.chunks.get(&chunk_position) {
-        Some(ChunkState::Stasis { chunk, .. }) => chunk,
-        Some(ChunkState::Active { chunk }) => chunk,
-        _ => None?,
-    };
-    let mut position2 = target_position;
-    let axis = chunk_axis(0);
-
-    let local_position = SVector::<usize, 3>::new(
-        target_position.x.rem_euclid(axis.x as _) as usize,
-        target_position.y.rem_euclid(axis.y as _) as usize,
-        target_position.z.rem_euclid(axis.z as _) as usize,
-    );
-
-    Some((chunk_position, local_position))
 }
 
 impl<C: Chunk> Dimension<C> {
@@ -145,12 +80,71 @@ impl<C: Chunk> Dimension<C> {
     pub fn get_chunk_activations(&self) -> &HashSet<ChunkPosition> {
         &self.chunk_activations
     }
-    /*
-    
-    pub fn flush_set_blocks(&mut self) {
-        let set = self.blocks_buffer.drain().collect::<Vec<_>>();
-        self.set_blocks(&set);
-    }*/
+
+    pub fn raycast<'a>(
+        &self,
+        target: raycast::Target,
+        translation: SVector<f32, 3>,
+        look: SVector<f32, 2>,
+    ) -> Option<(ChunkPosition, LocalPosition)> {
+        let forward_4d = (UnitQuaternion::from_axis_angle(
+            &Unit::new_normalize(SVector::<f32, 3>::new(0.0, 0.0, 1.0)),
+            look.x,
+        ) * UnitQuaternion::from_axis_angle(
+            &Unit::new_normalize(SVector::<f32, 3>::new(1.0, 0.0, 0.0)),
+            look.y,
+        ))
+        .to_homogeneous()
+            * SVector::<f32, 4>::new(0.0, 0.0, -1.0, 0.0);
+        let direction = SVector::<f32, 3>::new(forward_4d.x, forward_4d.y, forward_4d.z);
+        let origin = translation;
+
+        let descriptor = raycast::Descriptor {
+            origin,
+            direction,
+            minimum: SVector::<isize, 3>::new(isize::MIN, isize::MIN, isize::MIN),
+            maximum: SVector::<isize, 3>::new(isize::MAX, isize::MAX, isize::MAX),
+            max_distance: 10.0,
+            chunks: &self.chunks,
+        };
+
+        let mut ray = raycast::start(descriptor);
+
+        while let raycast::State::Traversal { .. } = raycast::drive(&mut ray).state {}
+
+        let Some(raycast::Hit { position, back_step, .. }) = raycast::hit(ray) else {
+    None?
+};
+
+        let target_position = if matches!(target, raycast::Target::Position) {
+            position
+        } else {
+            back_step
+        };
+
+        let chunk_position = SVector::<isize, 3>::new(
+            target_position.x.div_euclid(CHUNK_AXIS as _) as isize,
+            target_position.y.div_euclid(CHUNK_AXIS as _) as isize,
+            target_position.z.div_euclid(CHUNK_AXIS as _) as isize,
+        );
+
+        let chunk = match self.chunks.get(&chunk_position) {
+            Some(ChunkState::Stasis { chunk, .. }) => chunk,
+            Some(ChunkState::Active { chunk }) => chunk,
+            _ => None?,
+        };
+        let mut position2 = target_position;
+        let axis = chunk_axis(0);
+
+        let local_position = SVector::<usize, 3>::new(
+            target_position.x.rem_euclid(axis.x as _) as usize,
+            target_position.y.rem_euclid(axis.y as _) as usize,
+            target_position.z.rem_euclid(axis.z as _) as usize,
+        );
+
+        Some((chunk_position, local_position))
+    }
+
     pub fn set_blocks(&mut self, blocks: &[(ChunkPosition, LocalPosition, Block)]) {
         let mut modified_chunks = HashSet::<ChunkPosition>::new();
         let mut set_block_in_chunk = HashMap::<ChunkPosition, Vec<(LocalPosition, Block)>>::new();
@@ -175,10 +169,9 @@ impl<C: Chunk> Dimension<C> {
                 }
             };
             for (local_position, block) in blocks_at_position {
-                *chunk.get_mut(linearize(
-                    chunk_axis(chunk.lod_level()),
-                    local_position,
-                )).block_mut() = block;
+                *chunk
+                    .get_mut(linearize(chunk_axis(chunk.lod_level()), local_position))
+                    .block_mut() = block;
             }
             modified_chunks.insert(chunk_position);
         }

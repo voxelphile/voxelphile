@@ -5,10 +5,7 @@ use nalgebra::SVector;
 use serde_derive::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-use super::{
-    block::Block, dimension::ChunkState, structure::*,
-    WorldPosition, ChunkPosition,
-};
+use super::{block::Block, dimension::ChunkState, structure::*, ChunkPosition, WorldPosition};
 
 #[derive(Clone, Serialize, Deserialize)]
 pub enum Target {
@@ -16,20 +13,31 @@ pub enum Target {
     Backstep,
 }
 
-#[derive(Clone)]
-pub struct Descriptor<'a> {
+pub struct Descriptor<'a, C: Chunk> {
     pub origin: SVector<f32, 3>,
     pub direction: SVector<f32, 3>,
     pub minimum: SVector<isize, 3>,
     pub maximum: SVector<isize, 3>,
     pub max_distance: f32,
-    pub chunks: &'a HashMap<ChunkPosition, ChunkState<ServerChunk>>,
+    pub chunks: &'a HashMap<ChunkPosition, ChunkState<C>>,
 }
 
-#[derive(Clone)]
-pub enum State<'a> {
+impl<'a, C: Chunk> Clone for Descriptor<'a, C> {
+    fn clone(&self) -> Self {
+        Self {
+            origin: self.origin,
+            direction: self.direction,
+            maximum: self.maximum,
+            minimum: self.minimum,
+            max_distance: self.max_distance,
+            chunks: self.chunks,
+        }
+    }
+}
+
+pub enum State<'a, C: Chunk> {
     Traversal {
-        chunks: &'a HashMap<ChunkPosition, ChunkState<ServerChunk>>,
+        chunks: &'a HashMap<ChunkPosition, ChunkState<C>>,
         world_position: WorldPosition,
         distance: f32,
         mask: SVector<bool, 3>,
@@ -42,11 +50,48 @@ pub enum State<'a> {
     OutOfBounds,
     MaxDistReached,
     MaxStepReached,
-    BlockFound(Block, Box<State<'a>>),
+    BlockFound(Block, Box<State<'a, C>>),
 }
 
-impl<'a> From<Descriptor<'a>> for State<'a> {
-    fn from(mut desc: Descriptor<'a>) -> Self {
+impl<'a, C: Chunk> Clone for State<'a, C> {
+    fn clone(&self) -> Self {
+        match self {
+            Self::Traversal {
+                chunks,
+                world_position,
+                distance,
+                mask,
+                side_dist,
+                delta_dist,
+                ray_step,
+                step_count,
+            } => Self::Traversal {
+                chunks,
+                world_position: *world_position,
+                distance: *distance,
+                mask: *mask,
+                side_dist: *side_dist,
+                delta_dist: *delta_dist,
+                ray_step: *ray_step,
+                step_count: *step_count,
+            },
+            Self::VolumeNotReady => Self::VolumeNotReady,
+            Self::MaxDistReached => Self::MaxDistReached,
+            Self::MaxStepReached => Self::MaxStepReached,
+            Self::BlockFound(b, s) => {
+                assert!(match &**s {
+                    Self::BlockFound(_, _) => false,
+                    _ => true,
+                });
+                Self::BlockFound(*b, (*s).clone())
+            }
+            Self::OutOfBounds => Self::OutOfBounds,
+        }
+    }
+}
+
+impl<'a, C: Chunk> From<Descriptor<'a, C>> for State<'a, C> {
+    fn from(mut desc: Descriptor<'a, C>) -> Self {
         desc.direction = desc.direction.normalize();
         let world_position = SVector::<isize, 3>::new(
             f32::floor(desc.origin.x) as isize,
@@ -96,9 +141,9 @@ impl<'a> From<Descriptor<'a>> for State<'a> {
 }
 
 #[derive(Clone)]
-pub struct Ray<'a> {
-    pub descriptor: Descriptor<'a>,
-    pub state: State<'a>,
+pub struct Ray<'a, C: Chunk> {
+    pub descriptor: Descriptor<'a, C>,
+    pub state: State<'a, C>,
 }
 
 pub struct Hit {
@@ -112,16 +157,14 @@ pub struct Hit {
     pub block: Block,
 }
 
-pub fn start(descriptor: Descriptor) -> Ray {
+pub fn start<C: Chunk>(descriptor: Descriptor<C>) -> Ray<C> {
     Ray {
         state: descriptor.clone().into(),
         descriptor,
     }
 }
 
-pub fn drive<'a, 'b: 'a>(
-    ray: &'a mut Ray<'b>,
-) -> &'a mut Ray<'b> {
+pub fn drive<'a, 'b: 'a, C: Chunk>(ray: &'a mut Ray<'b, C>) -> &'a mut Ray<'b, C> {
     //checks
     {
         let State::Traversal {
@@ -153,7 +196,7 @@ pub fn drive<'a, 'b: 'a>(
 
             let chunk = match &chunks.get(&translation_chunk) {
                 Some(ChunkState::Stasis { chunk, .. }) => chunk,
-                    Some(ChunkState::Active { chunk }) => chunk,
+                Some(ChunkState::Active { chunk }) => chunk,
                 _ => {
                     ray.state = State::OutOfBounds;
                     return ray;
@@ -168,7 +211,7 @@ pub fn drive<'a, 'b: 'a>(
                 (position.z as usize).rem_euclid(axis.z as usize) as usize,
             );
 
-            match **chunk.get(linearize(axis, local_position)) {
+            match *chunk.get(linearize(axis, local_position)).block_ref() {
                 Block::Air => {}
                 block => {
                     ray.state = State::BlockFound(block, Box::new(ray.state.clone()));
@@ -223,7 +266,7 @@ pub fn drive<'a, 'b: 'a>(
     ray
 }
 
-pub fn hit(ray: Ray) -> Option<Hit> {
+pub fn hit<C: Chunk>(ray: Ray<C>) -> Option<Hit> {
     let State::BlockFound(block, prev_state) = ray.state else {
         None?
     };

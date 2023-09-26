@@ -1,4 +1,4 @@
-use std::{time::SystemTime, collections::VecDeque};
+use std::{collections::VecDeque, time::SystemTime};
 
 use nalgebra::SVector;
 use serde_derive::{Deserialize, Serialize};

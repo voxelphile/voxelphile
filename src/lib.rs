@@ -1,4 +1,4 @@
-#![feature(let_chains)]
+#![feature(let_chains, hash_drain_filter)]
 mod graphics;
 pub mod input;
 pub mod net;
@@ -10,7 +10,11 @@ use graphics::{vertex::BlockVertex, *};
 use input::Input;
 use nalgebra::SVector;
 use net::*;
-use std::{f32::consts::PI, ops, time::{self, SystemTime}};
+use std::{
+    f32::consts::PI,
+    ops,
+    time::{self, SystemTime},
+};
 use winit::{
     dpi::{PhysicalPosition, PhysicalSize},
     event::{ElementState, Event, MouseButton, VirtualKeyCode, WindowEvent},
@@ -23,11 +27,14 @@ use world::{
     ClientWorld,
 };
 
-use crate::{world::{
-    block::Block,
-    entity::{Change, Look, Main, Observer, Translation, Target},
-    ServerWorld,
-}, input::Inputs};
+use crate::{
+    input::Inputs,
+    world::{
+        block::Block,
+        entity::{Change, Look, Main, Observer, Target, Translation},
+        ServerWorld,
+    },
+};
 
 pub struct EventLoop(pub winit::event_loop::EventLoop<()>);
 
@@ -263,13 +270,19 @@ pub fn main() {
                 use band::*;
                 if let Some((inputs, _)) = <(&mut Inputs, &Main)>::query(&mut registry).next() {
                     if inputs.state.len() == 0 {
-                        inputs.state.push_back((SystemTime::now(), observer_input.clone()));
+                        inputs
+                            .state
+                            .push_back((SystemTime::now(), observer_input.clone()));
                     } else if let Some((_, prev_input)) = inputs.state.get(inputs.state.len() - 1) {
                         if *prev_input != observer_input {
-                            inputs.state.push_back((SystemTime::now(), observer_input.clone()));
+                            inputs
+                                .state
+                                .push_back((SystemTime::now(), observer_input.clone()));
                         }
                     } else {
-                        inputs.state.push_back((SystemTime::now(), observer_input.clone()));
+                        inputs
+                            .state
+                            .push_back((SystemTime::now(), observer_input.clone()));
                     }
                 }
 
@@ -295,12 +308,12 @@ pub fn main() {
                 }
                 if let Some(world) = &mut client_world && let Some(_) = client {     
                     world.delta_tick(&mut registry, delta_time);
-                }       
+                }
                 while accum_time >= FIXED_TIME {
                     if let Some(world) = &mut server_world && let Some(_) = server {
                         world.fixed_tick(&mut registry, delta_time);
                     }
-    
+
                     if let Some(world) = &mut client_world && let Some(_) = client {     
                         world.fixed_tick(&mut registry, delta_time);
                         world.display(&mut registry);
