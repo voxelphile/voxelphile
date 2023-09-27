@@ -709,7 +709,7 @@ impl super::GraphicsInterface for Boson {
             );
         }
 
-        self.render_graph = Some(self.record(self.device.clone(), self.swapchain.clone().unwrap()));
+            self.render_graph = Some(self.record(self.device.clone(), self.swapchain.clone().unwrap()));
 
         let mut render_graph = self.render_graph.take();
         render_graph.as_mut().unwrap().render(self);

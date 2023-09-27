@@ -260,7 +260,7 @@ pub mod staging {
             let uploads = guard.uploads.clone();
             let mut buffer_mapping = HashMap::<Buffer, Vec<Upload>>::new();
             let mut image_uploads = vec![];
-
+            
             for upload in uploads {
                 if let Upload::Buffer { buffer, .. } = &upload {
                     buffer_mapping.entry(*buffer).or_default().push(upload);

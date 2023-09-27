@@ -116,7 +116,7 @@ pub struct Connection {
     start: Instant,
 }
 
-#[profiling::all_functions]
+//#[profiling::all_functions]
 impl Connection {
     pub fn check_connection(mut self) -> Result<Result<Client, Error>, Self> {
         let recv_result = self.client.as_mut().unwrap().recv();
@@ -157,7 +157,7 @@ impl Connection {
     }
 }
 
-#[profiling::all_functions]
+//#[profiling::all_functions]
 impl Client {
     pub fn connect<A: ToSocketAddrs>(addresses: A) -> Result<Connection, Error> {
         let server_address = addresses
@@ -247,7 +247,7 @@ pub struct Server {
     socket: UdpSocket,
 }
 
-#[profiling::all_functions]
+//#[profiling::all_functions]
 impl Server {
     pub fn bind() -> Result<Self, Error> {
         let socket = UdpSocket::bind(&format!("0.0.0.0:{}", SERVER_PORT))

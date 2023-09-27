@@ -74,9 +74,9 @@ fn android_main(app: AndroidApp) {
 const FIXED_TIME: f32 = 1.0 / 20.0;
 
 pub fn main() {
-    #[cfg(not(target_os = "android"))]
-    let tracy = tracy_client::Client::start();
-    profiling::scope!("main");
+    //#[cfg(not(target_os = "android"))]
+    //let tracy = tracy_client::Client::start();
+    //profiling::scope!("main");
 
     let event_loop = unsafe { EVENT_LOOP.as_mut().unwrap() };
     let mut window = WindowBuilder::new().build(event_loop).unwrap();
@@ -322,7 +322,7 @@ pub fn main() {
                     tick_number += 1;
                 }
                 graphics.render(&mut registry);
-                profiling::finish_frame!()
+                //profiling::finish_frame!();
                 /*if let Some(world) = client_world {
                     world.cleanup(&mut registry);
                 }*/

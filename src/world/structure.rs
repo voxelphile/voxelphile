@@ -439,7 +439,6 @@ pub type PolyAmbientValues = Vec<Option<[Option<u8>; 6]>>;
 
 pub fn calc_ambient_between_chunk_neighbors(
     chunk_refs: &[&ClientChunk],
-    dir_mask: u8,
     target: ChunkPosition,
 ) -> PolyAmbientValues {
     let min = target - ChunkPosition::new(1, 1, 1);
@@ -449,6 +448,7 @@ pub fn calc_ambient_between_chunk_neighbors(
     let mut all_ambient_values =
         PolyAmbientValues::with_capacity(chunk_size(target_chunk.lod_level()));
     for i in 0..chunk_size(target_chunk.lod_level()) {
+        profiling::scope!("block");
         let cpos = delinearize(chunk_axis(target_chunk.lod_level()), i);
         let x = cpos.x as usize;
         let y = cpos.y as usize;
@@ -469,12 +469,22 @@ pub fn calc_ambient_between_chunk_neighbors(
         let mut dir_iter = Direction::iter();
         for d in 0..3 {
             for n in (-1..=1).step_by(2) {
+                profiling::scope!("dir");
                 let dir = dir_iter.next().unwrap();
-                if ((dir_mask >> dir as u8) & 1) == 1 {
-                    continue;
-                }
                 let mut normal = SVector::<isize, 3>::new(0, 0, 0);
                 normal[d] = n;
+
+                if {
+                    let next = position + normal;
+                    let next_chunk_position = SVector::<isize, 3>::new(
+                        next.x.div_euclid(CHUNK_AXIS as _) as isize,
+                        next.y.div_euclid(CHUNK_AXIS as _) as isize,
+                        next.z.div_euclid(CHUNK_AXIS as _) as isize,
+                    );
+                    next_chunk_position == target
+                } {
+                    continue;
+                }
 
                 let ambient_data = (voxel_ao)(
                     position + normal,
@@ -530,7 +540,7 @@ pub fn set_ambient_between_chunk_neighbors(
             .enumerate()
             .filter(|(_, v)| v.is_some())
         {
-            target_chunk.get_mut(i).ambient[j] = value.unwrap();
+            target_chunk.get_mut(i).ambient[j] |= value.unwrap();
         }
     }
 }

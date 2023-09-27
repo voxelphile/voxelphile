@@ -29,7 +29,6 @@ use super::structure::{
 
 pub struct Dimension<C: Chunk> {
     chunks: HashMap<ChunkPosition, ChunkState<C>>,
-    blocks_buffer: HashSet<(ChunkPosition, LocalPosition, Block)>,
     chunk_updated: HashSet<ChunkPosition>,
     chunk_border_changed: HashMap<ChunkPosition, HashSet<Direction>>,
     chunk_activations: HashSet<ChunkPosition>,
@@ -45,7 +44,6 @@ impl<C: Chunk> Dimension<C> {
     pub fn new() -> Self {
         Self {
             chunks: Default::default(),
-            blocks_buffer: Default::default(),
             chunk_updated: Default::default(),
             chunk_border_changed: Default::default(),
             chunk_activations: Default::default(),
@@ -160,11 +158,11 @@ impl<C: Chunk> Dimension<C> {
                 Some(ChunkState::Active { chunk }) => chunk,
                 Some(ChunkState::Stasis { chunk, .. }) => chunk,
                 _ => {
-                    let blocks_set_iter = blocks_at_position
+                    /*let blocks_set_iter = blocks_at_position
                         .iter()
                         .copied()
                         .map(|(l, b)| (chunk_position, l, b));
-                    self.blocks_buffer.extend(blocks_set_iter);
+                    self.blocks_buffer.extend(blocks_set_iter);*/
                     continue;
                 }
             };

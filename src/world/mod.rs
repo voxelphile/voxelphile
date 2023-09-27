@@ -80,11 +80,14 @@ impl<C: Chunk> ops::DerefMut for DimensionState<C> {
 
 pub struct ClientWorld {
     dimension_state: DimensionState<ClientChunk>,
+    needs_visibility: VecDeque<ChunkPosition>,
+    needs_ao: VecDeque<ChunkPosition>,
+    needs_internal_calc: VecDeque<ChunkPosition>,
 }
 
 fn common_fixed_tick<Tag: Component + fmt::Debug>(registry: &mut Registry) {}
 
-#[profiling::all_functions]
+//#[//profiling::all_functions]
 impl ClientWorld {
     pub fn new() -> Self {
         Self {
@@ -93,6 +96,9 @@ impl ClientWorld {
                 chunk_entity_mapping: Default::default(),
                 entity_chunk_mapping: Default::default(),
             },
+            needs_ao: Default::default(),
+            needs_visibility: Default::default(),
+            needs_internal_calc: Default::default(),
         }
     }
 
@@ -112,7 +118,6 @@ impl ClientWorld {
     pub fn fixed_tick(&mut self, registry: &mut Registry, delta_time: f32) {
         let client = registry.resource_mut::<Client>().unwrap();
         let _ = client.recv();
-
         common_fixed_tick::<ClientTag>(registry);
 
         if let Some((inputs, _)) = <(&Inputs, &Observer)>::query(registry).next() {
@@ -194,68 +199,71 @@ impl ClientWorld {
 
             let mut blocks = rle::decode(bytes);
 
+            let mut all_transparent = true;
+            assert_eq!(blocks.len(), chunk_size(chunk.lod_level()));
             for i in 0..chunk_size(chunk.lod_level()) {
+                if blocks[i].is_opaque() {
+                    all_transparent = false;
+                }
                 chunk.get_mut(i).block = blocks[i];
             }
 
-            let new_state = ChunkState::Stasis {
-                chunk,
-            };
-
-            self.dimension_state
-                .get_chunks_mut()
-                .insert(position, new_state);
+            if all_transparent {
+                self.dimension_state
+                    .get_chunks_mut()
+                    .insert(position, ChunkState::Active { chunk });
+            } else {
+                self.dimension_state
+                    .get_chunks_mut()
+                    .insert(position, ChunkState::Stasis { chunk });
+                self.needs_ao.push_front(position);
+                self.needs_internal_calc.push_front(position);
+                self.needs_visibility.push_front(position);
+            }
         }
 
         {
-            for (position, mut state) in self
-                .dimension_state
-                .get_chunks_mut()
-                .iter_mut()
-                .filter(|(_, state)|  {
-                    match state{
-                        ChunkState::Stasis { chunk } => chunk.inner_dirty,
-                        _ => false,
-                    }
-                })
-            {
-                let ChunkState::Stasis { chunk } = &mut state else {
+            //profiling::scope!("stasis_to_active");
+            let mut count = 0;
+            let mut iter = iter::repeat_with(|| self.needs_internal_calc.pop_back());
+            'a: while let Some(position) = iter.next().flatten() {
+                let ChunkState::Stasis { chunk } = self.dimension_state.get_chunks_mut().get_mut(&position).unwrap() else {
             continue;
         };
-            for i in 0..chunk_size(chunk.lod_level()) {
-                let visible_mask = calc_block_visible_mask_inside_chunk(chunk, i);
-                let ambient = calc_ambient_inside_chunk(chunk, i);
-                let mut info = chunk.get_mut(i);
-                info.visible_mask = visible_mask;
+                for i in 0..chunk_size(chunk.lod_level()) {
+                    //profiling::scope!("internal");
+                    let visible_mask = calc_block_visible_mask_inside_chunk(chunk, i);
+                    let ambient = calc_ambient_inside_chunk(chunk, i);
+                    let mut info = chunk.get_mut(i);
+                    info.visible_mask = visible_mask;
                     info.ambient = ambient;
+                }
+                chunk.inner_dirty = false;
+                count += 1;
+                if count >= 2 {
+                    break;
+                }
             }
-            chunk.inner_dirty = false;
-        }
-            for (position, mut state) in self
-                .dimension_state
-                .get_chunks_mut()
-                .drain_filter(|_, state|  {
-                    if !matches!(state, ChunkState::Stasis { .. }) {
-                        return false;
-                    }
 
-                    match &state {
-                        ChunkState::Stasis { chunk, .. } => {
-                            chunk.neighbor_direction_visibility_mask != 63
-                        }
-                        _ => false,
+            let mut count = 0;
+            let mut iter = iter::repeat_with(|| self.needs_visibility.pop_back());
+            let mut repeat = vec![];
+            'a: while let Some(position) = iter.next().flatten() {
+                //profiling::scope!("visibility");
+                let mut state = self
+                    .dimension_state
+                    .get_chunks_mut()
+                    .remove(&position)
+                    .unwrap();
+
+                let chunk = match &mut state {
+                    ChunkState::Active { chunk } => chunk,
+                    ChunkState::Stasis { chunk, .. } => chunk,
+                    _ => {
+                        repeat.push(position);
+                        continue;
                     }
-                })
-                .collect::<Vec<_>>()
-            {
-                let ChunkState::Stasis { chunk } = &mut state else {
-            continue;
-        };
-        let chunk = match &mut state {
-                ChunkState::Active { chunk } => chunk,
-                ChunkState::Stasis { chunk, .. } => chunk,
-                _ => continue,
-            };
+                };
 
                 neighbors(position, |neighbor, dir, dimension, normal| {
                     if ((chunk.neighbor_direction_visibility_mask >> dir as u8) & 1) == 1 {
@@ -268,8 +276,7 @@ impl ClientWorld {
                         return;
                     };
 
-                    let neighbor = match neighbor_state
-                    {
+                    let neighbor = match neighbor_state {
                         ChunkState::Active { chunk } => chunk,
                         ChunkState::Stasis { chunk, .. } => chunk,
                         _ => return,
@@ -278,84 +285,79 @@ impl ClientWorld {
 
                     chunk.neighbor_direction_visibility_mask |= 1 << dir as u8;
                 });
-
                 drop(chunk);
-                self.dimension_state.get_chunks_mut().insert(position, state);
+                self.dimension_state
+                    .get_chunks_mut()
+                    .insert(position, state);
+                count += 1;
+                if count >= 2 {
+                    break;
+                }
             }
+            self.needs_visibility.extend(repeat);
 
-            let mut activate = HashSet::new();
-
-            'a: for position in self
-                .dimension_state
-                .get_chunks()
-                .iter()
-                .filter_map(|(p, state)| {
-                    if !matches!(state, ChunkState::Stasis { .. }) {
-                        return None;
-                    }
-
-                    let all_neighbors_processed = match state {
-                        ChunkState::Stasis { chunk } => {
-                            chunk.neighbor_direction_ao_mask != 63
-                        }
-                        _ => false,
-                    };
-
-                    all_neighbors_processed.then(|| *p)
-                })
-                .collect::<Vec<_>>()
-            {
+            let mut count = 0;
+            let mut iter = iter::repeat_with(|| self.needs_ao.pop_back());
+            let  mut repeat = vec![];
+            'a: while let Some(position) = iter.next().flatten() {
+                //profiling::scope!("ao");
                 let min = position - ChunkPosition::new(1, 1, 1);
                 let mut chunk_refs = Vec::<&ClientChunk>::with_capacity(27);
-                for i in 0..27 {
-                    let pos = min
-                        + nalgebra::convert::<_, ChunkPosition>(delinearize(
-                            LocalPosition::new(3, 3, 3),
-                            i,
-                        ));
-                    chunk_refs.push(match &self.dimension_state.get_chunks().get(&pos) {
-                        Some(ChunkState::Active { chunk }) => chunk,
+                {
+                    //profiling::scope!("refs");
+
+                    for i in 0..27 {
+                        let pos = min
+                            + nalgebra::convert::<_, ChunkPosition>(delinearize(
+                                LocalPosition::new(3, 3, 3),
+                                i,
+                            ));
+                        chunk_refs.push(match &self.dimension_state.get_chunks().get(&pos) {
+                            Some(ChunkState::Active { chunk }) => chunk,
                             Some(ChunkState::Stasis { chunk, .. }) => chunk,
-                        _ => continue 'a,
-                    });
-                }
-                let mut poly_ambient_values = vec![];
-                for _ in 0..6 {
-                    poly_ambient_values.push(None);
-                }
-                for dir in Direction::iter() {
-                    if ((chunk_refs[27 / 2].neighbor_direction_ao_mask >> dir as u8) & 1) == 1 {
-                        continue;
+                            _ => {
+                                repeat.push(position);
+                                continue 'a;
+                            }
+                        });
                     }
-                    poly_ambient_values[dir as u8 as usize] =
-                        Some(calc_ambient_between_chunk_neighbors(
-                            &chunk_refs,
-                            chunk_refs[27 / 2].neighbor_direction_ao_mask,
-                            position,
-                        ));
                 }
-                
+                let mut poly_ambient_values = None;
+                let mut neighbor_direction_ao_mask = chunk_refs[27 / 2].neighbor_direction_ao_mask;
+
+                poly_ambient_values =
+                    Some(calc_ambient_between_chunk_neighbors(&chunk_refs, position));
+                neighbor_direction_ao_mask = 63;
+
                 drop(chunk_refs);
 
                 let Some(ChunkState::Stasis { chunk }) = self.dimension_state.get_chunks_mut().get_mut(&position) else {
-            panic!("?");
+            panic!("yo");
         };
-                chunk.neighbor_direction_ao_mask = 63;
-                for ambient_values in poly_ambient_values {
-                    let Some(ambient_values) = ambient_values else {
-                continue;
-            };
-                    set_ambient_between_chunk_neighbors(ambient_values, chunk);
+                chunk.neighbor_direction_ao_mask = neighbor_direction_ao_mask;
+                set_ambient_between_chunk_neighbors(poly_ambient_values.unwrap(), chunk);
+                count += 1;
+                if count >= 2 {
+                    break;
                 }
-                activate.insert(position);
             }
+            self.needs_ao.extend(repeat);
+
+            let mut activate = self
+                .dimension_state
+                .get_chunks()
+                .iter()
+                .filter(|(p, s)| {
+                    matches!(s, ChunkState::Stasis { .. })
+                        && !self.needs_ao.contains(p)
+                        && !self.needs_visibility.contains(p)
+                })
+                .map(|(p, _)| *p)
+                .collect::<Vec<_>>();
 
             for position in activate {
-                let Some(ChunkState::Stasis { chunk }) = self.dimension_state.get_chunks_mut().get_mut(&position) else {
-            panic!("?");
-        };
                 let ChunkState::Stasis { chunk, .. } = self.dimension_state.get_chunks_mut().remove(&position).unwrap() else {
-            continue;
+            panic!("yo");
         };
 
                 let new_state = ChunkState::Active { chunk };
@@ -471,7 +473,7 @@ pub struct ServerWorld {
     _generators: Vec<JoinHandle<()>>,
     load_chunk_order: VecDeque<ChunkPosition>,
 }
-#[profiling::all_functions]
+//#[//profiling::all_functions]
 impl ServerWorld {
     pub fn new() -> Self {
         let (pre_generator_tx, pre_generator_rx) = channel::unbounded();
@@ -774,7 +776,7 @@ impl ServerWorld {
 
     pub fn load(&mut self, registry: &mut Registry) {
         {
-            profiling::scope!("calc_load_order");
+            //profiling::scope!("calc_load_order");
 
             for (
                 Translation(translation_f),
@@ -838,7 +840,7 @@ impl ServerWorld {
             }
         }
         {
-            profiling::scope!("start_gen");
+            //profiling::scope!("start_gen");
             let (pre_generator_tx, _) = &self.pre_generator;
             for position in self.load_chunk_order.drain(..) {
                 let lod = 0;
@@ -876,7 +878,7 @@ impl ServerWorld {
             registry.insert(entity, Generating);
         }*/
         {
-            profiling::scope!("recv_gen");
+            //profiling::scope!("recv_gen");
             let (_, post_generator_rx) = &self.post_generator;
             let mut iter = iter::repeat_with(|| post_generator_rx.try_recv()).take(2);
             while let Some(GenResp {
@@ -885,12 +887,9 @@ impl ServerWorld {
                 lod,
             }) = iter.next().map(Result::ok).flatten()
             {
-                self.dimension_state.get_chunks_mut().insert(
-                    position,
-                    ChunkState::Stasis {
-                        chunk,
-                    },
-                );
+                self.dimension_state
+                    .get_chunks_mut()
+                    .insert(position, ChunkState::Stasis { chunk });
                 self.dimension_state
                     .get_chunk_updated_mut()
                     .insert(position);
@@ -898,7 +897,7 @@ impl ServerWorld {
         }
 
         {
-            profiling::scope!("activate");
+            //profiling::scope!("activate");
             let mut activate = HashSet::new();
             for (position, _) in self
                 .dimension_state
@@ -939,14 +938,14 @@ pub struct GenResp {
 }
 
 pub fn generator(post_generator_tx: Sender<GenResp>, pre_generator_rx: Receiver<GenReq>) {
-    profiling::register_thread!("generator");
+    //profiling::register_thread!("generator");
     loop {
         let Ok(GenReq { position, lod }) = pre_generator_rx.try_recv() else {
             thread::sleep(Duration::from_millis(1));
             continue;
         };
 
-        profiling::scope!("gen");
+        //profiling::scope!("gen");
 
         let chunk = gen(position, lod);
 

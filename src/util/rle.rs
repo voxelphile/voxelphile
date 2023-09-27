@@ -11,18 +11,18 @@ pub fn encode(blocks: &[Block]) -> Vec<u8> {
     let mut cursor = 1;
     let mut data = Vec::with_capacity(mem::size_of::<Block>() * blocks.len() * 3);
     loop {
-        if curr == blocks[cursor] && cursor + 1 < blocks.len() {
+        if  cursor  < blocks.len() && curr == blocks[cursor] {
             count += 1;
             cursor += 1;
             continue;
         }
-        if curr != blocks[cursor] || cursor + 1 >= blocks.len() {
-            if curr == blocks[cursor] {
+        if cursor >= blocks.len() || curr != blocks[cursor] {
+            if cursor < blocks.len() && curr == blocks[cursor] {
                 count += 1;
             }
             data.extend_from_slice(&count.to_be_bytes());
             data.extend_from_slice(&unsafe { mem::transmute::<_, u16>(curr) }.to_be_bytes());
-            if cursor + 1 < blocks.len() {
+            if cursor < blocks.len() {
                 count = 1;
                 curr = blocks[cursor];
                 cursor += 1;
