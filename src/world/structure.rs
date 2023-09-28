@@ -1,8 +1,9 @@
 use std::{
     cell::RefCell,
     collections::{HashMap, HashSet},
+    iter,
     marker::PhantomData,
-    ops::{Deref, DerefMut}, iter,
+    ops::{Deref, DerefMut},
 };
 
 use band::{Entity, QueryExt, Registry};
@@ -442,10 +443,10 @@ pub fn calc_ambient_between_chunk_neighbors(
     target: ChunkPosition,
     dir: Direction,
     dimension: usize,
-    normal: isize
+    normal: isize,
 ) -> PolyAmbientValues {
-                profiling::scope!("ambient_between_chunk_neighbors");
-                let min = target - ChunkPosition::new(1, 1, 1);
+    profiling::scope!("ambient_between_chunk_neighbors");
+    let min = target - ChunkPosition::new(1, 1, 1);
 
     let target_chunk = chunk_refs[27 / 2];
     let target_axis = chunk_axis(target_chunk.lod_level());
@@ -465,56 +466,63 @@ pub fn calc_ambient_between_chunk_neighbors(
             position[(dimension + 1) % 3] = u;
             position[(dimension + 2) % 3] = v;
 
-        if target_chunk.get(linearize(target_axis, position)).visible_mask & 63 == 0 {
-            continue;
-        }
-
-        let mut values = [None; 6];
-        let mut dir_iter = Direction::iter();
-        for d in 0..3 {
-            for n in (-1..=1).step_by(2) {
-            let position = nalgebra::convert::<_, SVector<isize, 3>>(position) + target * CHUNK_AXIS as isize;
-            let dir = dir_iter.next().unwrap();
-                let mut normal = SVector::<isize, 3>::new(0, 0, 0);
-                normal[d] = n;
-
-                let ambient_data = (voxel_ao)(
-                    position + normal,
-                    SVector::<isize, 3>::new(normal.z, normal.x, normal.y),
-                    SVector::<isize, 3>::new(normal.y, normal.z, normal.x),
-                    |mut position| {
-                        let chunk_position = SVector::<isize, 3>::new(
-                            position.x.div_euclid(CHUNK_AXIS as _) as isize,
-                            position.y.div_euclid(CHUNK_AXIS as _) as isize,
-                            position.z.div_euclid(CHUNK_AXIS as _) as isize,
-                        );
-                        let diff = chunk_position - min;
-                        let i = (diff.z as usize * 3 + diff.y as usize) * 3 + diff.x as usize;
-                        let chunk = chunk_refs[i];
-                        let axis = chunk_axis(chunk.lod_level());
-                        position /= chunk_lod(chunk.lod_level()) as isize;
-                        let local_position = SVector::<usize, 3>::new(
-                            position.x.rem_euclid(axis.x as _) as usize,
-                            position.y.rem_euclid(axis.y as _) as usize,
-                            position.z.rem_euclid(axis.z as _) as usize,
-                        );
-                        chunk
-                            .get(linearize(axis, local_position))
-                            .block_ref()
-                            .is_opaque()
-                    },
-                );
-
-                let value = (3 - ambient_data.x)
-                    | (3 - ambient_data.y) << 2
-                    | (3 - ambient_data.z) << 4
-                    | (3 - ambient_data.w) << 6;
-                values[dir as u8 as usize] = Some(value);
+            if target_chunk
+                .get(linearize(target_axis, position))
+                .visible_mask
+                & 63
+                == 0
+            {
+                continue;
             }
+
+            let mut values = [None; 6];
+            let mut dir_iter = Direction::iter();
+            for d in 0..3 {
+                for n in (-1..=1).step_by(2) {
+                    let position = nalgebra::convert::<_, SVector<isize, 3>>(position)
+                        + target * CHUNK_AXIS as isize;
+                    let dir = dir_iter.next().unwrap();
+                    let mut normal = SVector::<isize, 3>::new(0, 0, 0);
+                    normal[d] = n;
+
+                    let ambient_data = (voxel_ao)(
+                        position + normal,
+                        SVector::<isize, 3>::new(normal.z, normal.x, normal.y),
+                        SVector::<isize, 3>::new(normal.y, normal.z, normal.x),
+                        |mut position| {
+                            let chunk_position = SVector::<isize, 3>::new(
+                                position.x.div_euclid(CHUNK_AXIS as _) as isize,
+                                position.y.div_euclid(CHUNK_AXIS as _) as isize,
+                                position.z.div_euclid(CHUNK_AXIS as _) as isize,
+                            );
+                            let diff = chunk_position - min;
+                            let i = (diff.z as usize * 3 + diff.y as usize) * 3 + diff.x as usize;
+                            let chunk = chunk_refs[i];
+                            let axis = chunk_axis(chunk.lod_level());
+                            position /= chunk_lod(chunk.lod_level()) as isize;
+                            let local_position = SVector::<usize, 3>::new(
+                                position.x.rem_euclid(axis.x as _) as usize,
+                                position.y.rem_euclid(axis.y as _) as usize,
+                                position.z.rem_euclid(axis.z as _) as usize,
+                            );
+                            chunk
+                                .get(linearize(axis, local_position))
+                                .block_ref()
+                                .is_opaque()
+                        },
+                    );
+
+                    let value = (3 - ambient_data.x)
+                        | (3 - ambient_data.y) << 2
+                        | (3 - ambient_data.z) << 4
+                        | (3 - ambient_data.w) << 6;
+                    values[dir as u8 as usize] = Some(value);
+                }
+            }
+            all_ambient_values[linearize(chunk_axis(target_chunk.lod_level()), position)] =
+                Some(values);
         }
-        all_ambient_values[linearize(chunk_axis(target_chunk.lod_level()), position)] = Some(values);
     }
-}
     all_ambient_values
 }
 
@@ -538,7 +546,12 @@ pub fn set_ambient_between_chunk_neighbors(
     }
 }
 
-pub fn are_all_border_blocks_invisible(chunk: &ClientChunk, dir: Direction, dimension: usize, normal: isize) -> bool{
+pub fn are_all_border_blocks_invisible(
+    chunk: &ClientChunk,
+    dir: Direction,
+    dimension: usize,
+    normal: isize,
+) -> bool {
     let lod = chunk_lod(chunk.lod);
     'a: for u in 0..CHUNK_AXIS / lod {
         for v in 0..CHUNK_AXIS / lod {
@@ -552,9 +565,15 @@ pub fn are_all_border_blocks_invisible(chunk: &ClientChunk, dir: Direction, dime
             my_block_position[(dimension + 1) % 3] = u;
             my_block_position[(dimension + 2) % 3] = v;
 
-            if ((chunk.get(linearize(chunk_axis(chunk.lod), my_block_position)).visible_mask >> (dir as u8)) & 1) == 1{
+            if ((chunk
+                .get(linearize(chunk_axis(chunk.lod), my_block_position))
+                .visible_mask
+                >> (dir as u8))
+                & 1)
+                == 1
+            {
                 return false;
-            }    
+            }
         }
     }
     true

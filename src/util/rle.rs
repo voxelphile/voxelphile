@@ -11,7 +11,7 @@ pub fn encode(blocks: &[Block]) -> Vec<u8> {
     let mut cursor = 1;
     let mut data = Vec::with_capacity(mem::size_of::<Block>() * blocks.len() * 3);
     loop {
-        if  cursor  < blocks.len() && curr == blocks[cursor] {
+        if cursor < blocks.len() && curr == blocks[cursor] {
             count += 1;
             cursor += 1;
             continue;

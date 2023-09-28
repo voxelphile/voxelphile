@@ -11,9 +11,10 @@ use input::Input;
 use nalgebra::SVector;
 use net::*;
 use std::{
+    env,
     f32::consts::PI,
-    ops,
-    time::{self, SystemTime},
+    ops, thread,
+    time::{self, Duration, SystemTime},
 };
 use winit::{
     dpi::{PhysicalPosition, PhysicalSize},
@@ -73,23 +74,72 @@ fn android_main(app: AndroidApp) {
 
 const FIXED_TIME: f32 = 1.0 / 20.0;
 
+#[derive(Default, Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Mode {
+    #[default]
+    Client,
+    Server,
+    Daemon,
+}
+
+impl TryFrom<String> for Mode {
+    type Error = ();
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        use Mode::*;
+        Ok(match value.as_str() {
+            "client" => Client,
+            "server" => Server,
+            "daemon" => Daemon,
+            _ => Err(())?,
+        })
+    }
+}
+
 pub fn main() {
     #[cfg(not(target_os = "android"))]
     let tracy = tracy_client::Client::start();
     profiling::scope!("main");
 
+    let mut modes = env::args()
+        .map(Mode::try_from)
+        .map(Result::ok)
+        .filter_map(|x| x)
+        .collect::<Vec<_>>();
+    if modes.len() == 0 {
+        modes.push(Mode::Client);
+        modes.push(Mode::Server);
+    }
+
+    if modes.contains(&Mode::Server) {
+        thread::Builder::new().name("server".to_string()).spawn(|| {
+            server();
+        });
+    }
+    if modes.contains(&Mode::Daemon) {
+        thread::Builder::new().name("daemon".to_string()).spawn(|| {
+            daemon();
+        });
+    }
+    if modes.contains(&Mode::Client) {
+        client();
+    } else {
+        loop {
+            thread::sleep(Duration::from_secs_f32(1.0));
+        }
+    }
+}
+
+fn daemon() {}
+
+fn client() {
     let event_loop = unsafe { EVENT_LOOP.as_mut().unwrap() };
     let mut window = WindowBuilder::new().build(event_loop).unwrap();
 
     window.set_title("Xenotech");
-
+    dbg!("yo");
     let mut registry = Registry::default();
 
     registry.create(Graphics::init(&window));
-    if let Ok(server) = Server::bind() {
-        registry.create(server);
-        registry.create(ServerWorld::new());
-    }
     registry.create(ClientWorld::new());
     registry.create(Client::connect(&format!("127.0.0.1:{}", net::SERVER_PORT)).unwrap());
 
@@ -100,7 +150,7 @@ pub fn main() {
         registry.insert(entity, Look::default());
         registry.insert(entity, Inputs::default());
         registry.insert(entity, Observer { view_distance: 8 });
-        registry.insert(entity, Speed(10.4));
+        registry.insert(entity, Speed(4.3));
         registry.insert(entity, Main);
         registry.insert(entity, ClientTag);
     }
@@ -296,24 +346,14 @@ pub fn main() {
                     }
                 }
 
-                let server = registry.resource_mut::<Server>();
                 let client = registry.resource_mut::<Client>();
-                let mut server_world = registry.resource_mut::<ServerWorld>();
                 let mut client_world = registry.resource_mut::<ClientWorld>();
 
                 accum_time += delta_time;
-                if let Some(world) = &mut server_world && let Some(_) = server {
-                    world.delta_tick(&mut registry, delta_time);
-                    world.load(&mut registry);
-                }
                 if let Some(world) = &mut client_world && let Some(_) = client {     
                     world.delta_tick(&mut registry, delta_time);
                 }
                 while accum_time >= FIXED_TIME {
-                    if let Some(world) = &mut server_world && let Some(_) = server {
-                        world.fixed_tick(&mut registry, delta_time);
-                    }
-
                     if let Some(world) = &mut client_world && let Some(_) = client {     
                         world.fixed_tick(&mut registry, delta_time);
                         world.display(&mut registry);
@@ -322,12 +362,57 @@ pub fn main() {
                     tick_number += 1;
                 }
                 graphics.render(&mut registry);
-                //profiling::finish_frame!();
-                /*if let Some(world) = client_world {
-                    world.cleanup(&mut registry);
-                }*/
             }
             _ => (),
         }
     });
+}
+
+fn server() {
+    let mut registry = Registry::default();
+
+    if let Ok(server) = Server::bind() {
+        registry.create(server);
+        registry.create(ServerWorld::new());
+    } else {
+        panic!("port bound");
+    }
+
+    let start_time = time::Instant::now();
+    let mut last_delta_time = start_time;
+    let mut accum_time = 0.0f32;
+    let mut tick_number = 0usize;
+    thread::sleep(Duration::from_secs_f32(1.0));
+
+    loop {
+        thread::sleep(Duration::from_secs_f32(FIXED_TIME / 20.0));
+        let now = time::Instant::now();
+
+        let delta_time = now.duration_since(last_delta_time).as_secs_f32();
+        last_delta_time = now;
+
+        if let Some(connection) = registry.destroy::<Connection>() {
+            match connection.check_connection() {
+                Ok(Ok(client)) => registry.create(client),
+                Ok(Err(e)) => panic!("whoopsie daisy, {:?}", e),
+                Err(conn) => registry.create(conn),
+            }
+        }
+
+        let server = registry.resource_mut::<Server>();
+        let mut server_world = registry.resource_mut::<ServerWorld>();
+
+        accum_time += delta_time;
+        if let Some(world) = &mut server_world && let Some(_) = server {
+                    world.delta_tick(&mut registry, delta_time);
+                    world.load(&mut registry);
+                }
+        while accum_time >= FIXED_TIME {
+            if let Some(world) = &mut server_world && let Some(_) = server {
+                        world.fixed_tick(&mut registry, delta_time);
+                    }
+            accum_time -= FIXED_TIME;
+            tick_number += 1;
+        }
+    }
 }

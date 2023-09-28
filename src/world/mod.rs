@@ -103,6 +103,8 @@ impl ServerWorld {
                 })
             })
             .collect::<Vec<_>>(); */
+pub static mut CLIENT_RECV: usize = 0;
+pub static mut SERVER_SEND: usize = 0;
 pub struct ClientWorld {
     dimension_state: DimensionState<ClientChunk>,
     needs_visibility: HashSet<ChunkPosition>,
@@ -139,7 +141,7 @@ impl ClientWorld {
             needs_visibility: Default::default(),
             pre_internal: (pre_internal_tx, pre_internal_rx),
             post_internal: (post_internal_tx, post_internal_rx),
-            _internals
+            _internals,
         }
     }
 
@@ -180,13 +182,14 @@ impl ClientWorld {
     }
 
     fn recv_chunk_activations(&mut self, client: &mut Client) {
+        dbg!(unsafe { CLIENT_RECV });
         for message in
             client.get(|(msg, _)| matches!(msg, Message::Chunk(ChunkMessage::Activated(_))))
         {
             let Message::Chunk(ChunkMessage::Activated(ChunkActivated { position, lod, bytes })) = message.0 else {
                 continue;
             };
-
+            unsafe { CLIENT_RECV += 1 };
             let mut chunk = ClientChunk::new(lod);
 
             let mut blocks = rle::decode(bytes);
@@ -270,29 +273,35 @@ impl ClientWorld {
 
     fn calc_border_ao(&mut self) {
         let mut count = 0;
-        'a: for position in self.needs_ao.drain_filter(|p| {
-            if count >= MAX_PROCESS {
-                return false;
-            }
-            let min = p - ChunkPosition::new(1, 1, 1);
-            let mut chunks_present = 0;
-            for i in 0..27 {
-                let pos = min
-                    + nalgebra::convert::<_, ChunkPosition>(delinearize(
-                        LocalPosition::new(3, 3, 3),
-                        i,
-                    ));
-                let state = self.dimension_state.get_chunks().get(&pos);
-                if matches!(state, Some(ChunkState::Active { .. })) || matches!(state, Some(ChunkState::Stasis { .. })) {
-                    chunks_present += 1;
+        'a: for position in self
+            .needs_ao
+            .drain_filter(|p| {
+                if count >= MAX_PROCESS {
+                    return false;
                 }
-            }
-            let take = !self.needs_visibility.contains(&p) && chunks_present == 27;
-            if take {
-                count += 1;
-            }
-            take
-        }).collect::<Vec<_>>() {
+                let min = p - ChunkPosition::new(1, 1, 1);
+                let mut chunks_present = 0;
+                for i in 0..27 {
+                    let pos = min
+                        + nalgebra::convert::<_, ChunkPosition>(delinearize(
+                            LocalPosition::new(3, 3, 3),
+                            i,
+                        ));
+                    let state = self.dimension_state.get_chunks().get(&pos);
+                    if matches!(state, Some(ChunkState::Active { .. }))
+                        || matches!(state, Some(ChunkState::Stasis { .. }))
+                    {
+                        chunks_present += 1;
+                    }
+                }
+                let take = !self.needs_visibility.contains(&p) && chunks_present == 27;
+                if take {
+                    count += 1;
+                }
+                take
+            })
+            .collect::<Vec<_>>()
+        {
             //profiling::scope!("ao");
             let min = position - ChunkPosition::new(1, 1, 1);
             let mut chunk_refs = Vec::<&ClientChunk>::with_capacity(27);
@@ -324,7 +333,13 @@ impl ClientWorld {
                     if ((chunk_refs[27 / 2].neighbor_direction_ao_mask >> dir as u8) & 1) == 1 {
                         continue;
                     }
-                    poly_ao[dir as u8 as usize] = Some(calc_ambient_between_chunk_neighbors(&chunk_refs, position, dir, d, n));
+                    poly_ao[dir as u8 as usize] = Some(calc_ambient_between_chunk_neighbors(
+                        &chunk_refs,
+                        position,
+                        dir,
+                        d,
+                        n,
+                    ));
                 }
             }
 
@@ -335,7 +350,11 @@ impl ClientWorld {
                 };
             chunk.neighbor_direction_ao_mask = 63;
 
-            for poly_ambient_values in poly_ao.into_iter().filter(Option::is_some).map(Option::unwrap) {
+            for poly_ambient_values in poly_ao
+                .into_iter()
+                .filter(Option::is_some)
+                .map(Option::unwrap)
+            {
                 set_ambient_between_chunk_neighbors(poly_ambient_values, chunk);
             }
         }
@@ -343,33 +362,41 @@ impl ClientWorld {
 
     fn calc_visibility(&mut self) {
         let mut count = 0;
-        'a: for position in self.needs_visibility.drain_filter(|p| {
-            if count >= MAX_PROCESS {
-                return false;
-            }
+        'a: for position in self
+            .needs_visibility
+            .drain_filter(|p| {
+                if count >= MAX_PROCESS {
+                    return false;
+                }
 
-            let state = self.dimension_state.get_chunks().get(p);
+                let state = self.dimension_state.get_chunks().get(p);
 
-            if !(matches!(state, Some(ChunkState::Active { .. })) || matches!(state, Some(ChunkState::Stasis { .. }))) {
-                return false;
-            };
-    
-            let mut neighbors_present = 0;
-
-            neighbors(*p, |neighbor, _, _, _| {
-                let state = self.dimension_state.get_chunks().get(&neighbor);
-                if matches!(state, Some(ChunkState::Active { .. })) || matches!(state, Some(ChunkState::Stasis { .. })) {
-                    neighbors_present += 1;
+                if !(matches!(state, Some(ChunkState::Active { .. }))
+                    || matches!(state, Some(ChunkState::Stasis { .. })))
+                {
+                    return false;
                 };
-            });
 
-            let take =  neighbors_present == 6;
+                let mut neighbors_present = 0;
 
-            if take {
-                count += 1;
-            }
-            take
-        }).collect::<Vec<_>>() {
+                neighbors(*p, |neighbor, _, _, _| {
+                    let state = self.dimension_state.get_chunks().get(&neighbor);
+                    if matches!(state, Some(ChunkState::Active { .. }))
+                        || matches!(state, Some(ChunkState::Stasis { .. }))
+                    {
+                        neighbors_present += 1;
+                    };
+                });
+
+                let take = neighbors_present == 6;
+
+                if take {
+                    count += 1;
+                }
+                take
+            })
+            .collect::<Vec<_>>()
+        {
             //profiling::scope!("visibility");
             let mut state = self
                 .dimension_state
@@ -422,7 +449,9 @@ impl ClientWorld {
     fn calc_internal(&mut self) {
         let mut count = 0;
         while let Ok(InternalResp { chunk, position }) = self.post_internal.1.try_recv() {
-            self.dimension_state.get_chunks_mut().insert(position, ChunkState::Stasis { chunk });
+            self.dimension_state
+                .get_chunks_mut()
+                .insert(position, ChunkState::Stasis { chunk });
             self.needs_ao.insert(position);
             self.needs_visibility.insert(position);
         }
@@ -639,7 +668,20 @@ impl ServerWorld {
         self.chunk_updates(chunk_activated_positions, registry, new_clients, server);
     }
 
-    fn chunk_activations(&mut self, registry: &mut Registry, new_clients: &HashSet<ClientId>, server: &mut Server) -> HashSet<nalgebra::Matrix<isize, nalgebra::Const<3>, nalgebra::Const<1>, nalgebra::ArrayStorage<isize, 3, 1>>> {
+    fn chunk_activations(
+        &mut self,
+        registry: &mut Registry,
+        new_clients: &HashSet<ClientId>,
+        server: &mut Server,
+    ) -> HashSet<
+        nalgebra::Matrix<
+            isize,
+            nalgebra::Const<3>,
+            nalgebra::Const<1>,
+            nalgebra::ArrayStorage<isize, 3, 1>,
+        >,
+    > {
+        dbg!(unsafe { SERVER_SEND });
         let activations = self
             .dimension_state
             .get_chunk_activations_mut()
@@ -674,13 +716,27 @@ impl ServerWorld {
                             })),
                         )
                         .unwrap();
+                    unsafe { SERVER_SEND += 1 };
                 }
             }
         }
         chunk_activated_positions
     }
 
-    fn chunk_updates(&mut self, chunk_activated_positions: HashSet<nalgebra::Matrix<isize, nalgebra::Const<3>, nalgebra::Const<1>, nalgebra::ArrayStorage<isize, 3, 1>>>, registry: &mut Registry, new_clients: HashSet<ClientId>, server: &mut Server) {
+    fn chunk_updates(
+        &mut self,
+        chunk_activated_positions: HashSet<
+            nalgebra::Matrix<
+                isize,
+                nalgebra::Const<3>,
+                nalgebra::Const<1>,
+                nalgebra::ArrayStorage<isize, 3, 1>,
+            >,
+        >,
+        registry: &mut Registry,
+        new_clients: HashSet<ClientId>,
+        server: &mut Server,
+    ) {
         let updated = self.dimension_state.get_chunk_updated_mut().drain().collect::<Vec<_>>().into_iter().filter_map(|position| {
             let Some(ChunkState::Active { chunk }) = self.dimension_state.get_chunks().get(&position) else {
                 return None;
@@ -712,6 +768,7 @@ impl ServerWorld {
                             })),
                         )
                         .unwrap();
+                    unsafe { SERVER_SEND += 1 };
                 }
             }
         }
@@ -760,7 +817,11 @@ impl ServerWorld {
         self.dimension_state.set_blocks(&block_changes);
     }
 
-    fn accept_new_clients(&mut self, server: &mut Server, registry: &mut Registry) -> HashSet<ClientId> {
+    fn accept_new_clients(
+        &mut self,
+        server: &mut Server,
+        registry: &mut Registry,
+    ) -> HashSet<ClientId> {
         let Ok(new_clients) = server.accept() else {
             panic!("?");
         };
@@ -778,7 +839,7 @@ impl ServerWorld {
                     chunk_needed_iter: Box::new(0..0),
                 },
             );
-            registry.insert(entity, Speed(10.4));
+            registry.insert(entity, Speed(4.3));
             registry.insert(entity, client);
             registry.insert(entity, ServerTag);
 
@@ -835,7 +896,9 @@ impl ServerWorld {
 
                 let chunk_translation = translation / CHUNK_AXIS as isize;
 
-                if last_translation_f.metric_distance(&translation_f) >= *load_distance as f32 / 4.0
+                if !*recalculate_needed_chunks
+                    && last_translation_f.metric_distance(&translation_f)
+                        >= *load_distance as f32 / 4.0
                 {
                     *last_translation_f = *translation_f;
                     let side_length = 2 * *load_distance + 1;
@@ -874,7 +937,7 @@ impl ServerWorld {
                             self.load_chunk_order.push_back(pos);
                         }
                         a += 1;
-                        if a >= 10 {
+                        if a >= 512 || a >= (2 * *load_distance + 1).pow(3) {
                             break;
                         }
                     }
@@ -971,8 +1034,7 @@ impl ServerWorld {
 #[profiling::function]
 fn server_recv_inputs(registry: &mut Registry, server: &mut Server) {
     for (rep_inputs, client) in <(&mut Inputs, &ClientId)>::query(registry) {
-        for (message, info) in
-            server.get(*client, |(msg, _)| matches!(msg, Message::Inputs(input)))
+        for (message, info) in server.get(*client, |(msg, _)| matches!(msg, Message::Inputs(input)))
         {
             let Message::Inputs(inputs) = message else {
                 continue;
@@ -1083,7 +1145,6 @@ pub fn generator(post_generator_tx: Sender<GenResp>, pre_generator_rx: Receiver<
     }
 }
 
-
 pub fn internal(post_internal_tx: Sender<InternalResp>, pre_internal_rx: Receiver<InternalReq>) {
     profiling::register_thread!("internal");
     loop {
@@ -1102,10 +1163,6 @@ pub fn internal(post_internal_tx: Sender<InternalResp>, pre_internal_rx: Receive
             info.ambient = ambient;
         }
 
-
-        let _ = post_internal_tx.send(InternalResp {
-            position,
-            chunk,
-        });
+        let _ = post_internal_tx.send(InternalResp { position, chunk });
     }
 }

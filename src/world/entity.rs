@@ -14,7 +14,7 @@ pub struct Hitbox {
 
 pub struct ChunkTranslation(pub ChunkPosition);
 
-#[derive(Default)]
+#[derive(Default, Clone, Copy)]
 pub struct Translation(pub SVector<f32, 3>);
 #[derive(Default)]
 pub struct Look(pub SVector<f32, 2>);
