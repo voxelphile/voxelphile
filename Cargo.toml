@@ -31,5 +31,5 @@ serde_json = "*"
 serde_bytes = "*"
 serde_derive = "*"
 band = { path = "../band" }
-profiling = { version = "*" }
+profiling = { version = "*", features = ["profile-with-tracy"] }
 tracy-client = "*"

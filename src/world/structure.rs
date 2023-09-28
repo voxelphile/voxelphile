@@ -2,7 +2,7 @@ use std::{
     cell::RefCell,
     collections::{HashMap, HashSet},
     marker::PhantomData,
-    ops::{Deref, DerefMut},
+    ops::{Deref, DerefMut}, iter,
 };
 
 use band::{Entity, QueryExt, Registry};
@@ -440,51 +440,43 @@ pub type PolyAmbientValues = Vec<Option<[Option<u8>; 6]>>;
 pub fn calc_ambient_between_chunk_neighbors(
     chunk_refs: &[&ClientChunk],
     target: ChunkPosition,
+    dir: Direction,
+    dimension: usize,
+    normal: isize
 ) -> PolyAmbientValues {
-    let min = target - ChunkPosition::new(1, 1, 1);
+                profiling::scope!("ambient_between_chunk_neighbors");
+                let min = target - ChunkPosition::new(1, 1, 1);
 
     let target_chunk = chunk_refs[27 / 2];
     let target_axis = chunk_axis(target_chunk.lod_level());
     let mut all_ambient_values =
         PolyAmbientValues::with_capacity(chunk_size(target_chunk.lod_level()));
-    for i in 0..chunk_size(target_chunk.lod_level()) {
-        profiling::scope!("block");
-        let cpos = delinearize(chunk_axis(target_chunk.lod_level()), i);
-        let x = cpos.x as usize;
-        let y = cpos.y as usize;
-        let z = cpos.z as usize;
-        if x != 0
-            && x != target_axis.x - 1
-            && y != 0
-            && y != target_axis.y - 1
-            && z != 0
-            && z != target_axis.z - 1
-        {
-            all_ambient_values.push(None);
+    all_ambient_values.extend(iter::repeat(None).take(chunk_size(target_chunk.lod_level())));
+    let lod = chunk_lod(target_chunk.lod_level());
+    'a: for u in 0..CHUNK_AXIS / lod {
+        for v in 0..CHUNK_AXIS / lod {
+            let mut position = SVector::<usize, 3>::new(0, 0, 0);
+
+            position[dimension] = if normal == 1 {
+                chunk_axis(target_chunk.lod_level())[dimension] - 1
+            } else {
+                0
+            };
+            position[(dimension + 1) % 3] = u;
+            position[(dimension + 2) % 3] = v;
+
+        if target_chunk.get(linearize(target_axis, position)).visible_mask & 63 == 0 {
             continue;
         }
-        let position =
-            SVector::<isize, 3>::new(x as _, y as _, z as _) + target * CHUNK_AXIS as isize;
+
         let mut values = [None; 6];
         let mut dir_iter = Direction::iter();
         for d in 0..3 {
             for n in (-1..=1).step_by(2) {
-                profiling::scope!("dir");
-                let dir = dir_iter.next().unwrap();
+            let position = nalgebra::convert::<_, SVector<isize, 3>>(position) + target * CHUNK_AXIS as isize;
+            let dir = dir_iter.next().unwrap();
                 let mut normal = SVector::<isize, 3>::new(0, 0, 0);
                 normal[d] = n;
-
-                if {
-                    let next = position + normal;
-                    let next_chunk_position = SVector::<isize, 3>::new(
-                        next.x.div_euclid(CHUNK_AXIS as _) as isize,
-                        next.y.div_euclid(CHUNK_AXIS as _) as isize,
-                        next.z.div_euclid(CHUNK_AXIS as _) as isize,
-                    );
-                    next_chunk_position == target
-                } {
-                    continue;
-                }
 
                 let ambient_data = (voxel_ao)(
                     position + normal,
@@ -520,8 +512,9 @@ pub fn calc_ambient_between_chunk_neighbors(
                 values[dir as u8 as usize] = Some(value);
             }
         }
-        all_ambient_values.push(Some(values));
+        all_ambient_values[linearize(chunk_axis(target_chunk.lod_level()), position)] = Some(values);
     }
+}
     all_ambient_values
 }
 
@@ -540,9 +533,31 @@ pub fn set_ambient_between_chunk_neighbors(
             .enumerate()
             .filter(|(_, v)| v.is_some())
         {
-            target_chunk.get_mut(i).ambient[j] |= value.unwrap();
+            target_chunk.get_mut(i).ambient[j] = value.unwrap();
         }
     }
+}
+
+pub fn are_all_border_blocks_invisible(chunk: &ClientChunk, dir: Direction, dimension: usize, normal: isize) -> bool{
+    let lod = chunk_lod(chunk.lod);
+    'a: for u in 0..CHUNK_AXIS / lod {
+        for v in 0..CHUNK_AXIS / lod {
+            let mut my_block_position = SVector::<usize, 3>::new(0, 0, 0);
+
+            my_block_position[dimension] = if normal == 1 {
+                chunk_axis(chunk.lod)[dimension] - 1
+            } else {
+                0
+            };
+            my_block_position[(dimension + 1) % 3] = u;
+            my_block_position[(dimension + 2) % 3] = v;
+
+            if ((chunk.get(linearize(chunk_axis(chunk.lod), my_block_position)).visible_mask >> (dir as u8)) & 1) == 1{
+                return false;
+            }    
+        }
+    }
+    true
 }
 
 pub fn calc_block_visible_mask_between_chunks(
