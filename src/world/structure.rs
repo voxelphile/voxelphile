@@ -404,11 +404,14 @@ fn voxel_ao<F: Fn(SVector<isize, 3>) -> bool>(
     )
 }
 
-pub fn calc_ambient_inside_chunk(s: &ClientChunk, i: usize) -> [u8; 6] {
+pub fn calc_ambient_inside_chunk(s: &ClientChunk, visible_mask: u8, i: usize) -> [u8; 6] {
     let mut ambient_values = [0xFF; 6];
     let position = delinearize(chunk_axis(s.lod_level()), i);
     let axis = chunk_axis(s.lod_level());
     inner_neighbors(position, axis, |neighbor, dir| {
+        if ((visible_mask >> dir as u8) & 1) == 0 {
+            return;
+        }
         let neighbor = nalgebra::convert::<_, SVector<isize, 3>>(neighbor);
         let position = nalgebra::convert::<_, SVector<isize, 3>>(position);
         let normal = neighbor - position;
@@ -586,7 +589,7 @@ pub fn calc_block_visible_mask_between_chunks(
     dimension: usize,
     normal: isize,
 ) -> bool {
-    let mut changed = false;
+    let mut all_invisible = true;
     let max_lod = chunk_lod(chunk.lod).max(chunk_lod(neighbor.lod));
     let min_lod = chunk_lod(chunk.lod).min(chunk_lod(neighbor.lod));
     let (small_chunk, large_chunk, same) = if chunk_lod(chunk.lod) == min_lod {
@@ -628,7 +631,7 @@ pub fn calc_block_visible_mask_between_chunks(
                 visible_mask: my_visible_mask,
                 ..
             } = &mut *my_block_ref;
-            let my_visible_mask_reference = *my_visible_mask;
+
             *my_visible_mask &= !(1 << my_dir as u8);
             for u2 in 0..ratio_lod {
                 for v2 in 0..ratio_lod {
@@ -647,8 +650,6 @@ pub fn calc_block_visible_mask_between_chunks(
                         ..
                     } = &mut *their_block_ref;
 
-                    let their_visible_mask_reference = *their_visible_mask;
-
                     if my_block.is_opaque() {
                         *their_visible_mask &= !(1 << their_dir as u8);
                     } else {
@@ -658,15 +659,15 @@ pub fn calc_block_visible_mask_between_chunks(
                     if !their_block.is_opaque() {
                         *my_visible_mask |= 1 << my_dir as u8;
                     }
-
-                    changed = changed
-                        || *my_visible_mask != my_visible_mask_reference
-                        || *their_visible_mask != their_visible_mask_reference;
                 }
+            }
+
+            if all_invisible && ((*my_visible_mask >> (my_dir as u8)) & 1) == 1 {
+                all_invisible = false;
             }
         }
     }
-    changed
+    all_invisible
 }
 
 pub fn gen(position: SVector<isize, 3>, lod: usize) -> ServerChunk {

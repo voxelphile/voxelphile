@@ -59,7 +59,7 @@ pub type PrecisePosition = SVector<f32, 3>;
 pub struct ChunkMarker;
 
 pub const LOD_VIEW_FACTOR: f32 = 256.0;
-pub const MAX_PROCESS: usize = 6;
+pub const MAX_PROCESS: usize = 50;
 
 pub struct DimensionState<C: Chunk> {
     chunk_entity_mapping: HashMap<ChunkPosition, Entity>,
@@ -103,8 +103,6 @@ impl ServerWorld {
                 })
             })
             .collect::<Vec<_>>(); */
-pub static mut CLIENT_RECV: usize = 0;
-pub static mut SERVER_SEND: usize = 0;
 pub struct ClientWorld {
     dimension_state: DimensionState<ClientChunk>,
     needs_visibility: HashSet<ChunkPosition>,
@@ -161,6 +159,7 @@ impl ClientWorld {
     pub fn fixed_tick(&mut self, registry: &mut Registry, delta_time: f32) {
         let client = registry.resource_mut::<Client>().unwrap();
         let _ = client.recv();
+        let _ = client.ack();
 
         common_fixed_tick::<ClientTag>(registry);
 
@@ -182,45 +181,23 @@ impl ClientWorld {
     }
 
     fn recv_chunk_activations(&mut self, client: &mut Client) {
-        dbg!(unsafe { CLIENT_RECV });
-        for message in
-            client.get(|(msg, _)| matches!(msg, Message::Chunk(ChunkMessage::Activated(_))))
-        {
-            let Message::Chunk(ChunkMessage::Activated(ChunkActivated { position, lod, bytes })) = message.0 else {
+        for message in client.get(|msg| matches!(msg, Message::Chunk(ChunkMessage::Activated(_)))) {
+            let Message::Chunk(ChunkMessage::Activated(ChunkActivated { position, lod, bytes })) = message else {
                 continue;
             };
-            unsafe { CLIENT_RECV += 1 };
             let mut chunk = ClientChunk::new(lod);
 
             let mut blocks = rle::decode(bytes);
-
-            let mut all_transparent = true;
-
-            for i in 0..chunk_size(chunk.lod_level()) {
-                if blocks[i].is_opaque() {
-                    all_transparent = false;
-                }
-                chunk.get_mut(i).block = blocks[i];
-            }
-
-            if all_transparent {
-                self.dimension_state
-                    .get_chunks_mut()
-                    .insert(position, ChunkState::Active { chunk });
-            } else {
-                self.dimension_state
-                    .get_chunks_mut()
-                    .insert(position, ChunkState::Generating);
-                self.pre_internal.0.send(InternalReq { chunk, position });
-            }
+            self.dimension_state
+                .get_chunks_mut()
+                .insert(position, ChunkState::Generating);
+            self.pre_internal.0.send(InternalReq { blocks, chunk, position });
         }
     }
 
     fn recv_chunk_updates(&mut self, client: &mut Client) {
-        for message in
-            client.get(|(msg, _)| matches!(msg, Message::Chunk(ChunkMessage::Updated(_))))
-        {
-            let Message::Chunk(ChunkMessage::Updated(ChunkUpdated { position, bytes })) = message.0 else {
+        for message in client.get(|msg| matches!(msg, Message::Chunk(ChunkMessage::Updated(_)))) {
+            let Message::Chunk(ChunkMessage::Updated(ChunkUpdated { position, bytes })) = message else {
                 continue;
             };
 
@@ -428,9 +405,10 @@ impl ClientWorld {
                     ChunkState::Stasis { chunk, .. } => chunk,
                     _ => panic!("yo"),
                 };
-                calc_block_visible_mask_between_chunks(chunk, neighbor, dir, dimension, normal);
+                let all_invisible =
+                    calc_block_visible_mask_between_chunks(chunk, neighbor, dir, dimension, normal);
 
-                if are_all_border_blocks_invisible(chunk, dir, dimension, normal) {
+                if all_invisible {
                     chunk.neighbor_direction_ao_mask |= 1 << dir as u8;
                 }
 
@@ -448,12 +426,23 @@ impl ClientWorld {
 
     fn calc_internal(&mut self) {
         let mut count = 0;
-        while let Ok(InternalResp { chunk, position }) = self.post_internal.1.try_recv() {
-            self.dimension_state
-                .get_chunks_mut()
-                .insert(position, ChunkState::Stasis { chunk });
-            self.needs_ao.insert(position);
-            self.needs_visibility.insert(position);
+        while let Ok(InternalResp {
+            chunk,
+            position,
+            all_transparent,
+        }) = self.post_internal.1.try_recv()
+        {
+            if all_transparent {
+                self.dimension_state
+                    .get_chunks_mut()
+                    .insert(position, ChunkState::Active { chunk });
+            } else {
+                self.dimension_state
+                    .get_chunks_mut()
+                    .insert(position, ChunkState::Stasis { chunk });
+                self.needs_ao.insert(position);
+                self.needs_visibility.insert(position);
+            }
         }
     }
 
@@ -595,8 +584,8 @@ fn client_send_changes(registry: &mut Registry, client: &mut Client) {
 
 #[profiling::function]
 fn client_recv_corrections(client: &mut Client, registry: &mut Registry) {
-    for message in client.get(|(msg, _)| matches!(msg, Message::Correct(Correct::Target(_)))) {
-        let Message::Correct(Correct::Target(target)) = message.0 else {
+    for message in client.get(|msg| matches!(msg, Message::Correct(Correct::Target(_)))) {
+        let Message::Correct(Correct::Target(target)) = message else {
             continue;
         };
         let Some((rep_target, _)) = <(&mut Target, &Main)>::query(registry).next() else {
@@ -646,10 +635,8 @@ impl ServerWorld {
 
     pub fn fixed_tick(&mut self, registry: &mut Registry, delta_time: f32) {
         let server = registry.resource_mut::<Server>().unwrap();
-        if let Err(e) = server.recv() {
-            println!("{:?}", e);
-            return;
-        };
+        let _ = server.recv();
+        let _ = server.ack();
 
         common_fixed_tick::<ServerTag>(registry);
 
@@ -681,7 +668,6 @@ impl ServerWorld {
             nalgebra::ArrayStorage<isize, 3, 1>,
         >,
     > {
-        dbg!(unsafe { SERVER_SEND });
         let activations = self
             .dimension_state
             .get_chunk_activations_mut()
@@ -716,7 +702,6 @@ impl ServerWorld {
                             })),
                         )
                         .unwrap();
-                    unsafe { SERVER_SEND += 1 };
                 }
             }
         }
@@ -768,7 +753,6 @@ impl ServerWorld {
                             })),
                         )
                         .unwrap();
-                    unsafe { SERVER_SEND += 1 };
                 }
             }
         }
@@ -777,8 +761,8 @@ impl ServerWorld {
     fn make_changes(&mut self, registry: &mut Registry, server: &mut Server) {
         let mut add_change = HashMap::new();
         for (entity, client) in <(Entity, &ClientId)>::query(registry) {
-            for message in server.get(*client, |(msg, _)| matches!(msg, Message::Change(_))) {
-                let Message::Change(change) = message.0 else {
+            for message in server.get(*client, |msg| matches!(msg, Message::Change(_))) {
+                let Message::Change(change) = message else {
                     continue;
                 };
                 add_change.insert(entity, change);
@@ -833,7 +817,7 @@ impl ServerWorld {
             registry.insert(
                 entity,
                 Loader {
-                    load_distance: 8,
+                    load_distance: crate::HARDCODED_DISTANCE,
                     last_translation_f: SVector::<f32, 3>::new(f32::MAX, f32::MAX, f32::MAX),
                     recalculate_needed_chunks: false,
                     chunk_needed_iter: Box::new(0..0),
@@ -1034,8 +1018,7 @@ impl ServerWorld {
 #[profiling::function]
 fn server_recv_inputs(registry: &mut Registry, server: &mut Server) {
     for (rep_inputs, client) in <(&mut Inputs, &ClientId)>::query(registry) {
-        for (message, info) in server.get(*client, |(msg, _)| matches!(msg, Message::Inputs(input)))
-        {
+        for message in server.get(*client, |msg| matches!(msg, Message::Inputs(input))) {
             let Message::Inputs(inputs) = message else {
                 continue;
             };
@@ -1118,11 +1101,13 @@ pub struct GenResp {
 
 pub struct InternalReq {
     position: SVector<isize, 3>,
+    blocks: Vec<Block>,
     chunk: ClientChunk,
 }
 pub struct InternalResp {
     position: SVector<isize, 3>,
     chunk: ClientChunk,
+    all_transparent: bool,
 }
 
 pub fn generator(post_generator_tx: Sender<GenResp>, pre_generator_rx: Receiver<GenReq>) {
@@ -1148,21 +1133,38 @@ pub fn generator(post_generator_tx: Sender<GenResp>, pre_generator_rx: Receiver<
 pub fn internal(post_internal_tx: Sender<InternalResp>, pre_internal_rx: Receiver<InternalReq>) {
     profiling::register_thread!("internal");
     loop {
-        let Ok(InternalReq { position, mut chunk }) = pre_internal_rx.try_recv() else {
+        let Ok(InternalReq { position, blocks, mut chunk }) = pre_internal_rx.try_recv() else {
             thread::sleep(Duration::from_millis(1));
             continue;
         };
 
         profiling::scope!("int");
-
+        let mut transparent_count = 0;
         for i in 0..chunk_size(chunk.lod_level()) {
-            let visible_mask = calc_block_visible_mask_inside_chunk(&chunk, i);
-            let ambient = calc_ambient_inside_chunk(&chunk, i);
-            let info = chunk.get_mut(i);
-            info.visible_mask = visible_mask;
-            info.ambient = ambient;
+            chunk.get_mut(i).block = blocks[i];
+            transparent_count += !blocks[i].is_opaque() as usize;
         }
 
-        let _ = post_internal_tx.send(InternalResp { position, chunk });
+        let all_transparent = transparent_count == chunk_size(chunk.lod_level());
+
+        if !all_transparent {
+            for i in 0..chunk_size(chunk.lod_level()) {
+                let visible_mask = calc_block_visible_mask_inside_chunk(&chunk, i);
+                let ambient = if visible_mask & 63 == 0 {
+                    [0xFF; 6]
+                } else {
+                    calc_ambient_inside_chunk(&chunk, visible_mask, i)
+                };
+                let info = chunk.get_mut(i);
+                info.visible_mask = visible_mask;
+                info.ambient = ambient;
+            }
+        }
+
+        let _ = post_internal_tx.send(InternalResp {
+            position,
+            all_transparent,
+            chunk,
+        });
     }
 }

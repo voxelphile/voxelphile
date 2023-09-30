@@ -1,4 +1,4 @@
-#![feature(let_chains, hash_drain_filter)]
+#![feature(let_chains, hash_drain_filter, drain_filter)]
 mod graphics;
 pub mod input;
 pub mod net;
@@ -131,6 +131,8 @@ pub fn main() {
 
 fn daemon() {}
 
+pub const HARDCODED_DISTANCE: usize = 6;
+
 fn client() {
     let event_loop = unsafe { EVENT_LOOP.as_mut().unwrap() };
     let mut window = WindowBuilder::new().build(event_loop).unwrap();
@@ -149,7 +151,12 @@ fn client() {
         registry.insert(entity, Target(SVector::<f32, 3>::new(0.0, 0.0, 20.0)));
         registry.insert(entity, Look::default());
         registry.insert(entity, Inputs::default());
-        registry.insert(entity, Observer { view_distance: 8 });
+        registry.insert(
+            entity,
+            Observer {
+                view_distance: HARDCODED_DISTANCE,
+            },
+        );
         registry.insert(entity, Speed(4.3));
         registry.insert(entity, Main);
         registry.insert(entity, ClientTag);
@@ -382,10 +389,8 @@ fn server() {
     let mut last_delta_time = start_time;
     let mut accum_time = 0.0f32;
     let mut tick_number = 0usize;
-    thread::sleep(Duration::from_secs_f32(1.0));
 
     loop {
-        thread::sleep(Duration::from_secs_f32(FIXED_TIME / 20.0));
         let now = time::Instant::now();
 
         let delta_time = now.duration_since(last_delta_time).as_secs_f32();
