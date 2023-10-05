@@ -1,0 +1,58 @@
+[2023-10-01T22:10:37Z INFO MAIN] Hello, Xenotech!
+[2023-10-01T22:10:37Z INFO MAIN] Do you have an account?
+[2023-10-01T22:10:37Z INFO CLIENT] Hello!
+[2023-10-01T22:10:37Z INFO MAIN] Type "signup" or "login".
+[2023-10-01T22:11:20Z INFO MAIN] Do you have an account?
+[2023-10-01T22:11:20Z INFO MAIN] Type "signup" or "login".
+[2023-10-01T22:11:39Z INFO MAIN] Do you have an account?
+[2023-10-01T22:11:39Z INFO MAIN] Type "signup" or "login"
+[2023-10-01T22:18:39Z INFO MAIN] Do you have an account?
+[2023-10-01T22:18:39Z INFO MAIN] Type "signup" or "login"
+[2023-10-01T22:18:57Z INFO MAIN] Do you have an account?
+[2023-10-01T22:18:57Z INFO MAIN] Type "signup" or "login"
+[2023-10-01T22:18:58Z INFO MAIN] Invalid input: 
+[2023-10-01T22:19:05Z INFO MAIN] Do you have an account?
+[2023-10-01T22:19:05Z INFO MAIN] Type "signup" or "login"
+[2023-10-01T22:19:06Z INFO MAIN] Invalid input: asd
+
+[2023-10-01T22:19:15Z INFO MAIN] Do you have an account?
+[2023-10-01T22:19:15Z INFO MAIN] Type "signup" or "login"
+[2023-10-01T22:19:15Z INFO MAIN] Invalid input: "asd
+"
+[2023-10-01T22:20:28Z INFO MAIN] Do you have an account?
+[2023-10-01T22:20:28Z INFO MAIN] Type "signup" or "login"
+[2023-10-01T22:20:29Z INFO MAIN] Invalid input: "asdad"
+[2023-10-01T22:20:33Z INFO MAIN] Invalid input: "asdad"
+[2023-10-01T22:21:07Z INFO MAIN] Do you have an account?
+[2023-10-01T22:21:07Z INFO MAIN] Type "signup" or "login"
+[2023-10-01T22:21:08Z INFO MAIN] Invalid input: "ads"
+[2023-10-01T22:21:28Z INFO MAIN] Do you have an account?
+[2023-10-01T22:21:28Z INFO MAIN] Type "signup" or "login"
+[2023-10-01T22:21:30Z INFO MAIN] Invalid input: "asdad"
+[2023-10-01T22:22:23Z INFO MAIN] Do you have an account?
+[2023-10-01T22:22:23Z INFO MAIN] Type "signup" or "login"
+[2023-10-01T22:22:24Z INFO MAIN] Invalid input: "adsdasd"
+[2023-10-01T22:22:25Z INFO MAIN] Invalid input: "signup"
+[2023-10-01T22:22:57Z INFO MAIN] Do you have an account?
+[2023-10-01T22:22:57Z INFO MAIN] Type "signup" or "login"
+[2023-10-01T22:23:00Z INFO MAIN] Do you have an account?
+[2023-10-01T22:23:00Z INFO MAIN] Type "signup" or "login"
+[2023-10-01T22:23:02Z INFO MAIN] Invalid input: "signup"
+[2023-10-01T22:23:15Z INFO MAIN] Do you have an account?
+[2023-10-01T22:23:15Z INFO MAIN] Type "signup" or "login"
+[2023-10-01T22:24:09Z INFO MAIN] Do you have an account?
+[2023-10-01T22:24:09Z INFO MAIN] Type "signup" or "login"
+[2023-10-01T22:24:10Z INFO MAIN] Invalid input: "asdsad"
+[2023-10-01T22:28:48Z INFO MAIN] Do you have an account?
+[2023-10-01T22:28:48Z INFO MAIN] Type "signup" or "login"
+[2023-10-01T22:28:51Z ERROR MAIN] InvalidPassword
+[2023-10-01T22:28:51Z INFO MAIN] Do you have an account?
+[2023-10-01T22:28:51Z INFO MAIN] Type "signup" or "login"
+[2023-10-01T22:29:00Z ERROR MAIN] BadPassword
+[2023-10-01T22:29:00Z INFO MAIN] Do you have an account?
+[2023-10-01T22:29:00Z INFO MAIN] Type "signup" or "login"
+[2023-10-01T22:29:25Z INFO MAIN] Do you have an account?
+[2023-10-01T22:29:25Z INFO MAIN] Type "signup" or "login"
+[2023-10-01T22:29:27Z ERROR MAIN] InvalidPassword
+[2023-10-01T22:29:27Z INFO MAIN] Do you have an account?
+[2023-10-01T22:29:27Z INFO MAIN] Type "signup" or "login"
