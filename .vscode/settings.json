@@ -1,0 +1,7 @@
+{
+    "files.associations": {
+        "utility": "cpp"
+    },
+    "rust-analyzer.linkedProjects": [
+    ]
+}
