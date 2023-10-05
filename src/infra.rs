@@ -9,8 +9,8 @@ use async_trait::async_trait;
 use base64::Engine;
 // use common::log::{error, Log};
 // use common::rand::{self, thread_rng, Rng};
-use common::sol::*;
-use common::user::{
+use crate::sol::*;
+use crate::user::{
     UserCredentialDetails, UserCredentials, UserRegistration, UserRegistrationDetails,
 };
 use hmac::Mac;

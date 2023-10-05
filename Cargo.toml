@@ -9,6 +9,7 @@ edition = "2021"
 axum = "*"
 serde = { version = "*", features = ["derive"] }
 serde_json = "*"
+serde_bytes = "*"
 tokio = { version = "*", features = ["full"] }
 http = "*"
 argon2 = "*"
