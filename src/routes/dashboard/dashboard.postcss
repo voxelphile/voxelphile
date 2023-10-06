@@ -1,0 +1,95 @@
+@font-face {
+    font-family: amenti;
+    src: url(/font.otf);
+}
+
+#container {
+    display: flex;
+    flex-direction: column;
+    
+    width: 100%;
+    height: 100%;
+    
+    font-family: amenti;
+    font-size: 1em;
+
+    #header {
+        width: calc(100% - 20px);
+        height: 50px;
+        padding-right: 10px;
+        padding-left: 10px;
+        
+        display: flex;
+        flex-direction: row;
+        justify-content: center;
+
+        #logo {
+            display: flex;
+            flex-direction: row;
+            justify-content: center;
+
+            flex-grow: 1;
+
+            height: 50px;
+
+            .picture {
+                height:100%;
+            }
+        }
+
+        #center {
+            flex-grow: 1;
+            width:100%;
+        }
+
+        #profile-container {
+            width: 50px;
+            padding: 5px;
+            box-sizing: border-box;
+
+            #profile {
+                width: 100%;
+                height: 100%;
+                position: relative;
+                overflow: hidden;
+                border-radius: 50%;
+                border: 2px solid #000000;
+                transform: scale(80%);
+
+                .picture {
+                    width: 100%;
+                    height: 100%;
+                }
+            }
+        }
+    }
+
+    #body {
+        flex-grow: 1;
+        display: grid;
+        grid-template-columns: 1fr 5fr;
+
+        #menu {
+            padding-left: 10px;
+            grid-column: 1;
+            grid-row: 1;
+
+            font-size: 2em;
+        
+            .link {
+                text-decoration: none;
+                color: black;
+                transition: 100ms ease-out;
+            }
+
+            .link:hover {
+                color: red;
+            }
+        }
+
+        #contents {
+            grid-column: 2;
+            grid-row: 1;
+        }
+    }
+}
