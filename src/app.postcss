@@ -1,6 +1,88 @@
-/* Write your global styles here, in PostCSS syntax */
+@font-face {
+    font-family: amenti;
+    src: url(/font.otf);
+}
 html, body {
     width: 100%;
     height: 100%;
     margin: 0;
+    font-family: amenti;
+    background-color: #201e1f;
+    color: #dce0df;
+}
+
+
+.white {
+    background-color: white;
+    color: black;
+}
+
+.black {
+    background-color: #201e1f;
+    color: white;
+}
+
+.red {
+    color: red;
+}
+
+.yellow {
+    background-color: #fffa4f !important;
+    border-color: #fffa4f !important;
+    color: black !important;
+}
+
+.input {
+    font-family: amenti;
+    font-size: 1em;
+
+    box-sizing: border-box; 
+}
+
+.user {
+    padding-left: 10px;
+}
+
+.submit {
+    border-radius: 5px;
+    border: 2px solid #dce0df;
+    color: #dce0df;
+    background-color: #201e1f;
+    box-sizing: border-box; 
+    width: 80%;
+    font-family: amenti;
+    font-size: 1em;
+    box-sizing: border-box;
+    transition: all 100ms ease-out;
+    padding: 5px;
+    margin-top: 10px;
+    text-align: center;
+    text-decoration: none;
+}
+
+
+.submit:hover {
+    background-color: red !important;
+    border: 2px solid red !important;
+    color: white;
+    cursor: pointer;
+}
+
+.blur {
+    filter: blur(5px);
+}
+.blur:hover {
+    background-color: inherit !Important;
+    border: 2px solid #dce0df !important;
+    color: inherit !important;
+    cursor: default;
+}
+.blur-yellow {
+    filter: blur(5px);
+}
+.blur-yellow:hover {
+    background-color: #fffa4f !important;
+    border-color: #fffa4f !important;
+    color: black !important;
+    cursor: default;
 }

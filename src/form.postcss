@@ -2,47 +2,73 @@
     display: flex;
     flex-direction: column;
 
-    .input {
-        margin-top: 10px;
-
+    .input-group {
         width: 80%;
         height: 34px;
-        
-        border-radius: 5px;
-        border: 2px solid #000000;
-
-        font-family: amenti;
-        font-size: 1em;
-
-        box-sizing: border-box; 
-    }
-    
-    #user {
-        padding-left: 10px;
-    }
-
-    #submit {
-        transition: all 100ms ease-out;
-        padding: 5px;
         margin-top: 10px;
-        text-align: center;
-        text-decoration: none;
-    }
+        border-radius: 5px;
+        border: 2px solid #dce0df;
+        background-color: #201e1f !important;
+        position: relative;
+        font-family: amenti;
+        box-sizing: border-box; 
+        .input {
+            color-scheme: dark;
+            padding-left: 10px;
+            background-color: inherit;
+            border: none;
+            color: #dce0df !important;
+            width: 100%;
+            height: 100%;
+        }
 
-    #submit:hover {
-        background-color: red;
-        border: 2px solid red;
-        color: white;
-        cursor: pointer;
-    }
+        .input:focus {
+            outline: none;
+        }
 
-    .white {
-        background-color: white;
-        color: black;
-    }
+        .input:-webkit-autofill,
+        .input:-webkit-autofill:focus {
+            transition: background-color 600000s 0s, color 600000s 0s;
+        }
+        .input[data-autocompleted] {
+            background-color: transparent !important;
+        }
 
-    .black {
-        background-color: black;
-        color: white;
+        .label {
+            font-size: 0.75em;
+            position:absolute;
+            padding-left: 5px;
+            padding-right: 5px;
+            top:-9px;
+            left:10px;
+            
+            .label-text {
+            background-color: #201e1f !important;
+            padding-left: 5px;
+                padding-right: 5px;
+                background-color:inherit;
+            }
+            .error:empty {
+                padding: 0;
+                margin: 0;
+            }
+            .error {
+                margin-left: 10px;
+            }
+        }
     }
+}
+
+
+.submit-error {
+    color: red;
+    margin: 0px;
+    margin-top: 5px;
+    margin-left: 10px;
+    transition: 100ms ease-out;
+    cursor: default;
+}
+
+.submit-error-invisible {
+    color: #201e1f !important;
 }

@@ -28,6 +28,8 @@
             flex-direction: row;
             justify-content: center;
 
+            filter: invert(100%);
+
             flex-grow: 1;
 
             height: 50px;
@@ -53,7 +55,6 @@
                 position: relative;
                 overflow: hidden;
                 border-radius: 50%;
-                border: 2px solid #000000;
                 transform: scale(80%);
 
                 .picture {
@@ -78,7 +79,7 @@
         
             .link {
                 text-decoration: none;
-                color: black;
+                color: #dce0df;
                 transition: 100ms ease-out;
             }
 
@@ -92,4 +93,9 @@
             grid-row: 1;
         }
     }
+}
+
+.submit {
+    margin: 0 !important;
+    margin-top: 10px !important;
 }
