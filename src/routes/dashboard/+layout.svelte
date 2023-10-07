@@ -23,7 +23,7 @@
             </div>
         </div>
     </header>
-    <body id = "body">
+    <div id = "body">
         <div id = "menu">
             <a href="/dashboard" class = "link">Home</a>
             <br/>
@@ -32,5 +32,5 @@
         <main id = "contents">
             <slot />
         </main>
-    </body>
+    </div>
 </div>

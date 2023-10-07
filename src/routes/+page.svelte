@@ -14,14 +14,14 @@
         </header>
         <div id = "user">
             <div class = "row">
-                <a  class = "white submit blur" style = "width: 100%" href = "/user/login" on:click|preventDefault>Login</a>
+                <a  class = "white submit" style = "width: 100%" href = "/user/login">Login</a>
             </div>
             <div class = "row">
-                <a  class = "white submit blur" style = "width: 100%"  href = "/user/register" on:click|preventDefault>Signup</a>
+                <a class = "white submit" style = "width: 100%"  href = "/user/register" >Signup</a>
             </div>
             <div></div>
             <div class = "row">
-                <a id class = "yellow black submit blur-yellow" style = "width: 100%" href = "/voxelphile-plus">Voxelphile+</a>
+                <a class = "yellow black submit" style = "width: 100%" href = "/voxelphile-plus">Voxelphile+</a>
             </div>
         </div>
         <div id = "social">

@@ -91,6 +91,13 @@
         <div id = "profile-button-container"></div>
         <input type="button" id="profile-button" value="Choose Profile Picture" on:click={(e) => click_profile()}/>
     </div>
+    <noscript>
+        <style>
+            #upload-image {
+                display: none !important;
+            }
+        </style>
+    </noscript>
     <div class = "input-group">
         <div class = "label">
             <label class = "label-text">Email</label>
