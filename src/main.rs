@@ -53,23 +53,23 @@ pub async fn jwt_authentification<B>(
 ) -> Result<Response, StatusCode> {
     let authorization_header = match request.headers().get(AUTHORIZATION) {
         Some(v) => v,
-        None => return Err(StatusCode::UNAUTHORIZED),
+        None => return dbg!(Err(StatusCode::UNAUTHORIZED)),
     };
 
     let authorization = match authorization_header.to_str() {
         Ok(v) => v,
-        Err(_) => return Err(StatusCode::UNAUTHORIZED),
+        Err(_) => return dbg!(Err(StatusCode::UNAUTHORIZED)),
     };
 
     if !authorization.starts_with(BEARER) {
-        return Err(StatusCode::UNAUTHORIZED);
+        return dbg!(Err(StatusCode::UNAUTHORIZED));
     }
 
     let jwt_token = authorization.trim_start_matches(BEARER);
 
     let token_header = match jsonwebtoken::decode_header(&jwt_token) {
         Ok(header) => header,
-        _ => return Err(StatusCode::UNAUTHORIZED),
+        _ => return dbg!(Err(StatusCode::UNAUTHORIZED)),
     };
 
     // Get token header
@@ -79,11 +79,11 @@ pub async fn jwt_authentification<B>(
         &jsonwebtoken::Validation::new(token_header.alg),
     ) {
         Ok(claims) => claims,
-        _ => return Err(StatusCode::UNAUTHORIZED),
+        _ => return dbg!(Err(StatusCode::UNAUTHORIZED)),
     };
 
     let user = User {
-        id: uuid::Uuid::parse_str(&user_claims.claims.id).map_err(|_| StatusCode::UNAUTHORIZED)?,
+        id: uuid::Uuid::parse_str(&user_claims.claims.id).map_err(|_| dbg!(StatusCode::UNAUTHORIZED))?,
     };
 
     request.extensions_mut().insert(user);

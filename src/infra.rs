@@ -13,7 +13,7 @@ use tokio_util::codec::{FramedRead, BytesCodec};
 // use common::rand::{self, thread_rng, Rng};
 use crate::sol::*;
 use crate::user::{
-     UserCredentials, UserRegistration, UserRegistrationDetails, UserChange, User,
+     UserCredentials, UserRegistration, UserRegistrationDetails, UserChange, User, UserClaims,
 };
 use hmac::Mac;
 use http::StatusCode;
@@ -222,8 +222,8 @@ impl Strategy for Mockup {
         let key: hmac::Hmac<sha2::Sha256> =
             hmac::Hmac::new_from_slice(&env::var("VOXELPHILE_JWT_SECRET").unwrap().as_bytes())
                 .unwrap();
-        let mut claims = std::collections::HashMap::new();
-        claims.insert("id", id_string);
+        
+        let claims = UserClaims { id: id.to_string() };
 
         let token_string = claims.sign_with_key(&key).unwrap();
 
@@ -323,8 +323,8 @@ impl Strategy for Mockup {
         let key: hmac::Hmac<sha2::Sha256> =
             hmac::Hmac::new_from_slice(&env::var("VOXELPHILE_JWT_SECRET").unwrap().as_bytes())
                 .unwrap();
-        let mut claims = std::collections::HashMap::new();
-        claims.insert("id", id.to_string());
+
+        let claims = UserClaims { id: id.to_string() };
 
         let token_string = claims.sign_with_key(&key).unwrap();
 
