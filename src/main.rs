@@ -26,8 +26,8 @@ async fn main() {
     let protected_route =
         Router::new()
             .route("/user/change", post(user_change))
-            .layer(middleware::from_fn(|| 
-                jwt_authentification_flush,
+            .layer(middleware::from_fn(
+                jwt_authentification_flush
             ));
 
     let app = Router::new()
@@ -52,7 +52,7 @@ pub async fn jwt_authentification_flush<B>(
     mut request: Request<B>,
     next: Next<B>,
 ) -> Result<Response, StatusCode> {
-    let r = jwt_authentification(request, next);
+    let r = jwt_authentification(request, next).await;
     io::stdout().lock().flush();
     r
 }

@@ -223,7 +223,7 @@ impl Strategy for Mockup {
             hmac::Hmac::new_from_slice(&env::var("VOXELPHILE_JWT_SECRET").unwrap().as_bytes())
                 .unwrap();
         
-        let claims = UserClaims { id: id.to_string() };
+        let claims = UserClaims { id: id_string };
 
         let token_string = claims.sign_with_key(&key).unwrap();
 
