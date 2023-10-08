@@ -8,7 +8,8 @@ use axum_macros::debug_handler;
 use user::*;
 use http::{status::*, Request};
 use infra::*;
-use std::{net::*, env};
+use std::io::Write;
+use std::{net::*, env, io};
 
 #[tokio::main]
 async fn main() {
@@ -25,8 +26,8 @@ async fn main() {
     let protected_route =
         Router::new()
             .route("/user/change", post(user_change))
-            .layer(middleware::from_fn(
-                jwt_authentification,
+            .layer(middleware::from_fn(|| 
+                jwt_authentification_flush,
             ));
 
     let app = Router::new()
@@ -46,6 +47,15 @@ async fn root() -> Json<&'static str> {
 
 const AUTHORIZATION: &str = "Authorization";
 const BEARER: &str = "Bearer ";
+
+pub async fn jwt_authentification_flush<B>(
+    mut request: Request<B>,
+    next: Next<B>,
+) -> Result<Response, StatusCode> {
+    let r = jwt_authentification(request, next);
+    io::stdout().lock().flush();
+    r
+}
 
 pub async fn jwt_authentification<B>(
     mut request: Request<B>,
