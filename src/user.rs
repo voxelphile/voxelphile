@@ -2,19 +2,11 @@ use std::net::SocketAddr;
 
 use serde_derive::{Deserialize, Serialize};
 
-pub struct User {}
-
-#[derive(Serialize, Deserialize)]
-#[serde(untagged)]
-pub enum UserCredentialDetails {
-    Username { username: String },
-    Email { email: String },
-}
 
 #[derive(Serialize, Deserialize)]
 pub struct UserCredentials {
     pub password: String,
-    pub details: UserCredentialDetails,
+    pub email: String,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -30,6 +22,14 @@ pub struct UserRegistration {
     pub details: UserRegistrationDetails,
 }
 
+#[derive(Serialize, Deserialize)]
+pub struct UserChange {
+    pub profile: Option<String>,
+    pub username: Option<String>,
+    pub email: Option<String>,
+    pub password: Option<String>,
+}
+
 pub const SESSION_BYTES: usize = 64;
 
 #[derive(Serialize, Deserialize)]
@@ -37,4 +37,14 @@ pub struct UserConnection {
     #[serde(with = "serde_bytes")]
     pub session: Vec<u8>,
     pub ip: SocketAddr,
+}
+
+#[derive(Clone)]
+pub struct User {
+    pub id: uuid::Uuid,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct UserClaims {
+    pub id: String,
 }

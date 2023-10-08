@@ -7,10 +7,13 @@ edition = "2021"
 
 [dependencies]
 axum = "*"
+axum-macros = "*"
 serde = { version = "*", features = ["derive"] }
 serde_json = "*"
 serde_bytes = "*"
 tokio = { version = "*", features = ["full"] }
+tokio-stream = { version = "*", features = ["full"] }
+tokio-util = { version = "*", features = ["codec"] }
 http = "*"
 argon2 = "*"
 lazy_static = "*"
@@ -22,3 +25,7 @@ jwt = "0.16.0"
 hmac = "*"
 sha2 = "*"
 async-trait = "*"
+image = "*"
+image-base64 = "*"
+reqwest = { version = "*", features = ["stream"] }
+jsonwebtoken = "*"
