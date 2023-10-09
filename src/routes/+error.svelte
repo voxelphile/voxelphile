@@ -23,6 +23,6 @@
         <div id = "user">
             <a id = "submit" style="width: 100%" class = "white submit" href = "/">Home</a>
         </div>
-        <p class = "red">{get_error_info()}</p>
+        <p class = "red failed">{get_error_info()}</p>
     </div>
 </div>

@@ -1,5 +1,7 @@
+import { error, fail } from "@sveltejs/kit";
+import { fetch_promise } from "../../../user-form.js";
 /** @type {import('./$types').Actions} */
-import {get_local_user_form_errors} from "../../../user-form.js"
+import { api } from "../../../const.js";
 export const actions = {
 	default: async (event) => {
 		const formData = await event.request.formData();
@@ -7,18 +9,13 @@ export const actions = {
         const password = formData.get('password')?.toString();
         const email = formData.get('email')?.toString();        
 
-        const errors = get_local_user_form_errors(formData);
-        if(Object.keys(errors).length > 0) {
-            return errors;
-        }
-
         if (username == undefined || password == undefined || email == undefined) {
             return { success: false };
         }
 
         let json = { username, details: { password, email } };
 
-        const request = new Request("https://api.voxelphile.com/user/register", {
+        const request = new Request(api + "/user/register", {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json'
@@ -26,10 +23,12 @@ export const actions = {
             body: JSON.stringify(json),
         });
 
-        fetch(request)
-            .then((response) => {
-                console.log(response);
-            });
+        let response;
+        try {
+            response = await fetch_promise(request);
+        } catch (err) {
+            throw error(503, "Service unavailable");
+        }
         
         return { success: true };
 	}

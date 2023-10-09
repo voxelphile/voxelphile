@@ -6,6 +6,9 @@
     import { profile_data } from "../store";
     export let form;
 
+    /** @type {import('./$types').PageData} */
+	export let data;
+
     async function load_profile(image_file) {
         return new Promise((resolve, reject) => {
             var reader = new FileReader();
@@ -45,7 +48,7 @@
             }, false);
         });
     }
-    
+
     async function resize_profile(raw_image_url) {
         var image = new Image();
         image.src = raw_image_url;
@@ -83,7 +86,9 @@
 <form id = "form" method = "POST" enctype="multipart/form-data" use:enhance={(e) => enhance_form(e)}>
     <div id = "upload-image">
         {#if $profile_data}
-            <img class = "profile-image" style="transform: scale(80%);" src = {$profile_data} draggable="false" on:dragstart={(e) => { e.preventDefault() }}/>
+            <img class = "profile-image" src = {$profile_data} draggable="false" on:dragstart={(e) => { e.preventDefault() }}/>
+        {:else if data.profile_url}
+            <img class = "profile-image" style="transform: scale(80%);" src = {data.profile_url} draggable="false" on:dragstart={(e) => { e.preventDefault() }}/>
         {:else}
             <img class = "profile-image" style="filter: invert(96%) sepia(0%) saturate(35%) hue-rotate(221deg) brightness(98%) contrast(84%); transform: scale(80%);" src = "/default-profile.png" draggable="false" on:dragstart={(e) => { e.preventDefault() }}/>
         {/if}

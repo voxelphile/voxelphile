@@ -21,7 +21,7 @@
                 <label class = "label-text red error"></label>
             {/if}
     </div>
-    <input id = "user" class = "input" type = "password" name = "username"/>
+    <input id = "user" class = "input" name = "username"/>
 </div>
 <div class = "input-group">
     <div class = "label">
@@ -32,7 +32,7 @@
                 <label class = "label-text red error"></label>
             {/if}
     </div>
-    <input id = "user" class = "input" name = "password"/>
+    <input id = "user" class = "input" type = "password" name = "password"/>
 </div>
 <div class = "input-group">
     <div class = "label">

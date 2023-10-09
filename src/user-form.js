@@ -1,4 +1,26 @@
-export const get_local_user_form_errors = (formData) => {
+import { error, fail } from "@sveltejs/kit";
+export async function fetch_promise(request) {
+    let response;
+    try {
+        response = await new Promise((resolve, reject) => {
+            fetch(request)
+                .then((response) => {
+                    if (response.status != 200) {
+                        reject(response.status);
+                    }
+                    resolve(response);
+                })
+                .catch(err => reject(503));
+        });
+        return response;
+    } catch (err) {
+        if(typeof err == 'number') {
+            throw error(err, "Sorry, your request failed to complete. Give Voxelphile this code: " + err);
+        }
+    }
+}
+
+export const _get_local_user_form_errors = (formData) => {
     const username = formData.get('username');
     const password = formData.get('password');
     const repassword = formData.get('repassword');
@@ -22,5 +44,15 @@ export const get_local_user_form_errors = (formData) => {
     if(username != null && username.toString().length > 32) {
         errors.username_error= 'Must be at most 32 characters';
     }
+    return errors;
+};
+
+export const get_local_user_form_update_errors = (formData) => {
+    const username = formData.get('username');
+    const password = formData.get('password');
+    const repassword = formData.get('repassword');
+
+    let errors = { repassword_error: '', password_error: '', username_error: '' };
+    
     return errors;
 };

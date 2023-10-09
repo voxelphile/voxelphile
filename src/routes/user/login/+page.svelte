@@ -11,7 +11,7 @@
             <label class = "label-text red error"></label>
         {/if}
     </div>
-    <input id = "user" class = "input" name = "email"/>
+    <input class = "user input" name = "email"/>
 </div>
 <div class = "input-group">
     <div class = "label">
@@ -22,7 +22,7 @@
             <label class = "label-text red error"></label>
         {/if}
     </div>
-    <input id = "user" class = "input" type = "password" name = "password"/>
+    <input class = "user input" type = "password" name = "password"/>
 </div>
 <button id = "submit" type = "submit" class = "white submit">Login</button>
 <a id = "submit" class = "black submit" href = "/user/register">Signup</a>
