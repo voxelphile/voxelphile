@@ -26,6 +26,6 @@ hmac = "*"
 sha2 = { version = "*" }
 async-trait = "*"
 image = "*"
-image-base64 = "*"
+rustc-serialize="*"
 reqwest = { version = "*", features = ["stream", "json"] }
 jsonwebtoken = "*"

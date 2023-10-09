@@ -9,6 +9,7 @@ use argon2::{Argon2, PasswordHasher};
 use async_trait::async_trait;
 use base64::Engine;
 use jsonwebtoken::{EncodingKey, Header, Algorithm, encode};
+use rustc_serialize::base64::FromBase64;
 use tokio_util::codec::{BytesCodec, FramedRead};
 // use common::log::{error, Log};
 // use common::rand::{self, thread_rng, Rng};
@@ -377,7 +378,7 @@ impl Strategy for Mockup {
         Ok(UserDetails {
             username: row.get::<_, String>(0),
             email: row.get::<_, String>(1),
-            profile: row.get::<_, String>(2),
+            profile: row.try_get::<_, String>(2).ok(),
         })
     }
 
@@ -561,8 +562,12 @@ impl Strategy for Mockup {
 
         let mut profile_data = vec![];
 
+        dbg!("yo");
         if let Some(profile) = &change.profile {
-            profile_data = image_base64::from_base64(profile.clone());
+            let offset = profile.find(',').ok_or(BadProfile)?+1;
+            let mut value = profile.clone();
+            value.drain(..offset);
+            profile_data = value.from_base64().map_err(|_| BadProfile)?;
 
             let statement = "select voxelphile.users.profile_id from voxelphile.users where voxelphile.users.id = $1;";
             let params = [
@@ -583,6 +588,7 @@ impl Strategy for Mockup {
 
         let transaction = postgres.transaction().await.map_err(|e| DbError)?;
 
+        dbg!("yo");
         if let Some(_) = &change.profile {
             let image = image::io::Reader::with_format(
                 Cursor::new(profile_data.clone()),
@@ -615,13 +621,13 @@ impl Strategy for Mockup {
         }
 
         let mut password_hash = None;
-
+        dbg!("yo");
         if let Some(password) = change.password.clone() {
             check_password(&password).then_some(()).ok_or(BadPassword)?;
 
             password_hash = Some(hash_password(password).await.ok_or(BadPassword)?);
         }
-
+        dbg!("yo");
         if let Some(password_hash) = &password_hash {
             let statement = "update voxelphile.user_password_logins set password = $1 where id = $2;";
 
@@ -639,38 +645,54 @@ impl Strategy for Mockup {
         let mut params = vec![];
         let mut updates = Vec::<String>::new();
         let mut prepared = Vec::<String>::new();
+        dbg!(&change.username);
+        dbg!(&change.email);
 
+        dbg!("yo");
         if let Some(username) = &change.username {
             check_username(username).then_some(()).ok_or(BadUsername)?;
 
             updates.push("username".to_owned());
-            prepared.push(format!("${}", updates.len()));
-
             params.push(username as &(dyn tokio_postgres::types::ToSql + Sync));
-        }
+            prepared.push(format!("${}", params.len()));
 
+        }
+        dbg!("yo");
         if let Some(email) = &change.email {
             check_email(email).then_some(()).ok_or(BadEmail)?;
 
             updates.push("email".to_owned());
-            prepared.push(format!("${}", updates.len()));
-
             params.push(email as &(dyn tokio_postgres::types::ToSql + Sync));
+            prepared.push(format!("${}", params.len()));
+
         }
 
+        let id_string = id.to_string();
+        
+        dbg!("yo");
         if updates.len() > 0 {
-            prepared.push(id.to_string());
+            params.push(&id_string as &(dyn tokio_postgres::types::ToSql + Sync));
+            let id_prepared = params.len();
+
+            let mut sub_statements = vec![];
+
+            for i in 0..updates.len() {
+                sub_statements.push(format!("{} = {}", updates.pop().unwrap(), prepared.pop().unwrap()));
+            }
+
+            let update_col_expr = sub_statements.join(", ");
 
             let statement = format!(
-                "update voxelphile.users set ({}) = ({}) where id = {};",
-                updates.concat(),
-                prepared.concat(),
-                format!("${}", prepared.len())
+                "update voxelphile.users set {} where id = {};",
+                update_col_expr,
+                format!("${}", id_prepared)
             );
 
-            transaction
+            dbg!(&statement);
+
+            dbg!(transaction
                 .execute(&statement, &params)
-                .await
+                .await)
                 .map_err(|e| {
                     if let Some(&SqlState::UNIQUE_VIOLATION) = e.code() {
                         Duplicate

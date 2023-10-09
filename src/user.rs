@@ -53,5 +53,5 @@ pub struct UserClaims {
 pub struct UserDetails {
     pub username: String,
     pub email: String,
-    pub profile: String,
+    pub profile: Option<String>,
 }
