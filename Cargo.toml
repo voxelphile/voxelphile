@@ -23,9 +23,9 @@ uuid = { version = "*", features = ["v4"] }
 base64 = "0.21.4"
 jwt = "0.16.0"
 hmac = "*"
-sha2 = "*"
+sha2 = { version = "*" }
 async-trait = "*"
 image = "*"
 image-base64 = "*"
-reqwest = { version = "*", features = ["stream"] }
+reqwest = { version = "*", features = ["stream", "json"] }
 jsonwebtoken = "*"

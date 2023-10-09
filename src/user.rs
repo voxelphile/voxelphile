@@ -2,7 +2,6 @@ use std::net::SocketAddr;
 
 use serde_derive::{Deserialize, Serialize};
 
-
 #[derive(Serialize, Deserialize)]
 pub struct UserCredentials {
     pub password: String,
@@ -47,4 +46,12 @@ pub struct User {
 #[derive(Serialize, Deserialize)]
 pub struct UserClaims {
     pub id: String,
+    pub exp: usize,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct UserDetails {
+    pub username: String,
+    pub email: String,
+    pub profile: String,
 }

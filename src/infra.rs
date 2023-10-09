@@ -8,12 +8,14 @@ use argon2::password_hash::{Salt, SaltString};
 use argon2::{Argon2, PasswordHasher};
 use async_trait::async_trait;
 use base64::Engine;
-use tokio_util::codec::{FramedRead, BytesCodec};
+use jsonwebtoken::{EncodingKey, Header, Algorithm, encode};
+use tokio_util::codec::{BytesCodec, FramedRead};
 // use common::log::{error, Log};
 // use common::rand::{self, thread_rng, Rng};
 use crate::sol::*;
 use crate::user::{
-     UserCredentials, UserRegistration, UserRegistrationDetails, UserChange, User, UserClaims,
+    User, UserChange, UserClaims, UserCredentials, UserDetails, UserRegistration,
+    UserRegistrationDetails,
 };
 use hmac::Mac;
 use http::StatusCode;
@@ -77,22 +79,49 @@ pub enum UserChangeError {
     BadUsername,
     BadPassword,
     BadProfile,
-    Duplicate
+    Duplicate,
 }
-
 
 impl UserChangeError {
     pub fn status_code(&self) -> StatusCode {
         use UserChangeError::*;
         match self {
             DbError | ServerError => StatusCode::INTERNAL_SERVER_ERROR,
-            BadEmail | BadPassword | BadUsername | Duplicate | BadProfile => StatusCode::UNPROCESSABLE_ENTITY,
+            BadEmail | BadPassword | BadUsername | Duplicate | BadProfile => {
+                StatusCode::UNPROCESSABLE_ENTITY
+            }
         }
     }
 }
+
+#[derive(Serialize, Deserialize)]
+pub enum UserGetError {
+    DbError,
+    ServerError,
+    NotFound,
+}
+
+impl UserGetError {
+    pub fn status_code(&self) -> StatusCode {
+        use UserGetError::*;
+        match self {
+            DbError | ServerError => StatusCode::INTERNAL_SERVER_ERROR,
+            NotFound => StatusCode::UNPROCESSABLE_ENTITY,
+        }
+    }
+}
+
 #[async_trait]
 pub trait Strategy {
-    async fn create_db_client_connection() -> Result<Postgres, tokio_postgres::error::Error>;
+    async fn create_db_client_connection() -> Result<Postgres, DbError>;
+
+    async fn get_db_ip() -> Result<String, GoogleApiError>;
+
+    async fn get_access_token() -> Result<String, GoogleApiError>;
+
+    async fn remove(path: &str) -> Result<(), ()>;
+
+    async fn upload_bytes(data: Vec<u8>, path: &str) -> Result<(), ()>;
 
     async fn login_user(
         postgres: &Postgres,
@@ -110,6 +139,8 @@ pub trait Strategy {
         user: User,
     ) -> Result<(), UserChangeError>;
 
+    async fn get_user(postgres: &Postgres, user: User) -> Result<UserDetails, UserGetError>;
+
     async fn retrieve_sol() -> Result<SolAddress, SolError>;
 }
 
@@ -126,8 +157,7 @@ fn check_email(email: &str) -> bool {
 }
 
 fn check_username(username: &str) -> bool {
-    username.chars().all(|x| x.is_alphanumeric())
-        && username.len() <= MAX_USERNAME_LEN
+    username.chars().all(|x| x.is_alphanumeric()) && username.len() <= MAX_USERNAME_LEN
 }
 
 async fn hash_password(password: String) -> Option<String> {
@@ -135,7 +165,10 @@ async fn hash_password(password: String) -> Option<String> {
         let mut data = [0u8; SALT_LEN];
         let step = mem::size_of::<u128>() / mem::size_of::<u8>();
         for i in (0..SALT_LEN).step_by(step) {
-            let micros = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_micros();
+            let micros = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_micros();
             for j in 0..step {
                 data[i + j] = ((micros & u8::MAX as u128) >> 8 * j) as u8;
             }
@@ -160,19 +193,68 @@ async fn hash_password(password: String) -> Option<String> {
     Some(password_hash_string)
 }
 
+#[derive(Serialize, Deserialize)]
+struct GoogleAccessTokenClaims {
+    iss: String,
+    scope: String,
+    aud: String,
+    exp: usize,
+    iat: usize,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+struct GoogleApiIdToken {
+    id_token: String,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+struct GoogleApiAccessTokenResp {
+    access_token: String,
+    expires_in: usize,
+    token_type: String,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+struct GoogleCloudGetInstance {
+    #[serde(rename = "networkInterfaces")]
+    network_interfaces: Vec<GoogleCloudNetworkInterface>,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+struct GoogleCloudNetworkInterface {
+    #[serde(rename = "accessConfigs")]
+    access_configs: Vec<GoogleCloudAccessConfig>,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+struct GoogleCloudAccessConfig {
+    #[serde(rename = "natIP")]
+    nat_ip: String,
+}
+
+#[derive(Debug)]
+pub enum DbError {
+    Postgres(tokio_postgres::error::Error),
+    CouldNotFetchIp,
+}
+
+#[derive(Debug)]
+pub enum GoogleApiError {
+    ServerError
+}
+
 #[async_trait]
 impl Strategy for Mockup {
-    async fn create_db_client_connection() -> Result<Postgres, tokio_postgres::error::Error> {
+    async fn create_db_client_connection() -> Result<Postgres, DbError> {
         let (client, connection) = tokio_postgres::connect(
             &format!(
-                "host={} user=voxelphile port={} password={}",
-                env::var("VOXELPHILE_POSTGRES_HOST").unwrap(),
-                env::var("VOXELPHILE_POSTGRES_PORT").unwrap(),
+                "host={} user=voxelphile password={}",
+                Self::get_db_ip().await.map_err(|_| DbError::CouldNotFetchIp)?,
                 env::var("VOXELPHILE_POSTGRES_PASSWORD").unwrap()
             ),
             tokio_postgres::NoTls,
         )
-        .await?;
+        .await.map_err(|e| DbError::Postgres(e))?;
 
         tokio::spawn(async move {
             if let Err(e) = connection.await {
@@ -183,6 +265,122 @@ impl Strategy for Mockup {
         Ok(std::sync::Arc::new(tokio::sync::Mutex::new(client)))
     }
 
+    async fn get_db_ip() -> Result<String, GoogleApiError> {
+        use GoogleApiError::*;
+
+        let project = "voxelphile";
+        let zone = "us-central1-a";
+        let instance = "postgres-1";
+
+        let client = reqwest::Client::new();
+
+        let GoogleCloudGetInstance { network_interfaces } = client.get(&format!("https://compute.googleapis.com/compute/v1/projects/{project}/zones/{zone}/instances/{instance}"))
+        .bearer_auth(match Self::get_access_token().await {
+            Ok(x) => x,
+            Err(e) => Err(ServerError)?
+        })
+        .header("Content-Type", "image/jpeg")
+        .send()
+        .await
+        .map_err(|e| {
+            ServerError
+        })?
+        .json::<GoogleCloudGetInstance>().await.map_err(|e| {
+            ServerError
+        })?;
+
+        Ok(network_interfaces[0].access_configs[0].nat_ip.clone())
+    }
+
+    async fn remove(path: &str) -> Result<(), ()> {
+        let client = reqwest::Client::new();
+        let path = path.clone().replace("/", "%2F");
+        dbg!(client
+            .delete(&format!("https://storage.googleapis.com/storage/v1/b/{}/o/{}", "voxelphile", path))
+            .bearer_auth(match Self::get_access_token().await {
+                Ok(x) => x,
+                Err(e) => { dbg!(e);  Err(())? },
+            })
+            .send()
+            .await)
+            .map(|_| ())
+            .map_err(|e| {dbg!(e); ()})
+    }
+
+    async fn upload_bytes(data: Vec<u8>, path: &str) -> Result<(), ()> {
+        let client = reqwest::Client::new();
+        let path = path.clone().replace("/", "%2F");
+        dbg!(client
+            .post(&format!("https://storage.googleapis.com/upload/storage/v1/b/{}/o?uploadType=media&name={}", "voxelphile", path))
+            .body(data)
+            .bearer_auth(match Self::get_access_token().await {
+                Ok(x) => x,
+                Err(e) => { dbg!(e);  Err(())? },
+            })
+            .header("Content-Type", "image/jpeg")
+            .send()
+            .await)
+            .map(|_| ())
+            .map_err(|e| {dbg!(e); ()})
+    }
+    
+    async fn get_access_token() -> Result<String, GoogleApiError> {
+        use GoogleApiError::*;
+
+        let client = reqwest::Client::new();
+
+        let iat =  SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as usize;
+
+        let google_access_token_claims = GoogleAccessTokenClaims {
+            iss: "voxelphile@voxelphile.iam.gserviceaccount.com".to_owned(),
+            scope: "https://www.googleapis.com/auth/cloud-platform".to_owned(),
+            aud: "https://oauth2.googleapis.com/token".to_owned(),
+            exp: iat + 60,
+            iat,
+        };
+
+        let encoding_key = EncodingKey::from_rsa_pem(&env::var("GOOGLE_API_CLIENT_SECRET").unwrap().as_bytes()).unwrap();
+        let token_string = encode(&Header::new(Algorithm::RS256), &google_access_token_claims, &encoding_key).unwrap();
+        
+        let mut params = std::collections::HashMap::new();
+        params.insert("grant_type", "urn:ietf:params:oauth:grant-type:jwt-bearer");
+        params.insert("assertion", token_string.as_str());
+
+
+        let GoogleApiAccessTokenResp { access_token: google_api_access_token, .. } = client
+            .post("https://oauth2.googleapis.com/token")
+            .header("Content-Type", "application/x-www-form-urlencoded")
+            .form(&params)
+            .send()
+            .await
+            .map_err(|e| { dbg!(e); ServerError })?
+            .json::<GoogleApiAccessTokenResp>().await.map_err(|_| ServerError)?;
+
+
+       Ok(google_api_access_token)
+    }
+
+    async fn get_user(postgres: &Postgres, user: User) -> Result<UserDetails, UserGetError> {
+        use UserGetError::*;
+
+        let postgres = postgres.lock().await;
+        let statement = "select username, email, profile_id from voxelphile.users where id = $1;";
+        let params = [&user.id.to_string() as &(dyn tokio_postgres::types::ToSql + Sync)];
+        dbg!(&user.id);
+        let Ok(row) = postgres.query_one(statement, &params).await else {
+            Err(NotFound)?
+        };
+
+        Ok(UserDetails {
+            username: row.get::<_, String>(0),
+            email: row.get::<_, String>(1),
+            profile: row.get::<_, String>(2),
+        })
+    }
+
     async fn login_user(
         postgres: &Postgres,
         credentials: &UserCredentials,
@@ -190,19 +388,19 @@ impl Strategy for Mockup {
         let postgres = postgres.lock().await;
 
         use UserLoginError::*;
-        let (query, params) =  {
+        let (query, params) = {
             let email = &credentials.email;
-            let query = "select xenotech.users.id, xenotech.user_password_logins.password_hash from xenotech.users
-            left join xenotech.user_password_logins on xenotech.users.id = xenotech.user_password_logins.id where email = $1 limit 1;";
+            let query = "select voxelphile.users.id, voxelphile.user_password_logins.password_hash from voxelphile.users
+            left join voxelphile.user_password_logins on voxelphile.users.id = voxelphile.user_password_logins.id where email = $1 limit 1;";
             let params = [email as &(dyn tokio_postgres::types::ToSql + Sync)];
             (query, params)
         };
 
-        let Ok(statement) = postgres.prepare(query).await.map_err(|e| dbg!(e)) else {
+        let Ok(statement) = postgres.prepare(query).await.map_err(|e| e) else {
             Err(DbError)?
         };
 
-        let Ok(row) = postgres.query_one(&statement, &params).await.map_err(|e| dbg!(e))  else {
+        let Ok(row) = postgres.query_one(&statement, &params).await.map_err(|e| e)  else {
             Err(NotFound)?
         };
 
@@ -220,10 +418,19 @@ impl Strategy for Mockup {
         };
 
         let key: hmac::Hmac<sha2::Sha256> =
-            hmac::Hmac::new_from_slice(&env::var("VOXELPHILE_JWT_SECRET").unwrap().as_bytes())
+            hmac::Hmac::new_from_slice(&dbg!(env::var("VOXELPHILE_JWT_SECRET").unwrap()).as_bytes())
                 .unwrap();
-        
-        let claims = UserClaims { id: id_string };
+
+        let exp = SystemTime::now()
+            .checked_add(Duration::from_secs(86400))
+            .unwrap()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs_f32() as usize;
+
+        dbg!(&id_string);
+
+        let claims = UserClaims { id: id_string, exp };
 
         let token_string = claims.sign_with_key(&key).unwrap();
 
@@ -238,7 +445,9 @@ impl Strategy for Mockup {
 
         use UserRegistrationError::*;
 
-        check_username(&registration.username).then_some(()).ok_or(BadUsername)?;
+        check_username(&registration.username)
+            .then_some(())
+            .ok_or(BadUsername)?;
 
         enum UserParamData {
             Voxelphile {
@@ -254,7 +463,8 @@ impl Strategy for Mockup {
                 check_email(&email).then_some(()).ok_or(BadEmail)?;
                 check_password(&password).then_some(()).ok_or(BadPassword)?;
 
-                let password_hash_string = hash_password(password.clone()).await.ok_or(BadPassword)?;
+                let password_hash_string =
+                    hash_password(password.clone()).await.ok_or(BadPassword)?;
 
                 let param_data = UserParamData::Voxelphile {
                     email: email.clone(),
@@ -275,7 +485,7 @@ impl Strategy for Mockup {
             } => {
                 {
                     let statement =
-                        "insert into xenotech.users (id, username, email) values ($1, $2, $3);";
+                        "insert into voxelphile.users (id, username, email) values ($1, $2, $3);";
 
                     let email_dyn_ref = &email as &(dyn tokio_postgres::types::ToSql + Sync);
 
@@ -288,7 +498,7 @@ impl Strategy for Mockup {
 
                     params.push(email_dyn_ref);
 
-                    transaction.execute(statement, &params).await.map_err(|e| {
+                    dbg!(transaction.execute(statement, &params).await).map_err(|e| {
                         if let Some(&SqlState::UNIQUE_VIOLATION) = e.code() {
                             Duplicate
                         } else {
@@ -297,7 +507,7 @@ impl Strategy for Mockup {
                     })?;
                 }
                 {
-                    let statement = "insert into xenotech.user_password_logins (id, password_hash) values ($1, $2);";
+                    let statement = "insert into voxelphile.user_password_logins (id, password_hash) values ($1, $2);";
 
                     let password_hash_dyn_ref =
                         &password_hash_string as &(dyn tokio_postgres::types::ToSql + Sync);
@@ -308,23 +518,30 @@ impl Strategy for Mockup {
 
                     params.push(password_hash_dyn_ref);
 
-                    let Ok(_) = transaction.execute(statement, &params).await else {
+                    let Ok(_) = dbg!(transaction.execute(statement, &params).await) else {
                         Err(DbError)?
                     };
                 }
             }
         }
 
-        transaction.commit().await.map_err(|e| {
-            dbg!(e);
-            DbError
-        })?;
+        dbg!(transaction.commit().await).map_err(|e| DbError)?;
 
         let key: hmac::Hmac<sha2::Sha256> =
             hmac::Hmac::new_from_slice(&env::var("VOXELPHILE_JWT_SECRET").unwrap().as_bytes())
                 .unwrap();
 
-        let claims = UserClaims { id: id.to_string() };
+        let exp = SystemTime::now()
+            .checked_add(Duration::from_secs(86400))
+            .unwrap()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs_f32() as usize;
+
+        let claims = UserClaims {
+            id: id.to_string(),
+            exp,
+        };
 
         let token_string = claims.sign_with_key(&key).unwrap();
 
@@ -338,47 +555,67 @@ impl Strategy for Mockup {
     ) -> Result<(), UserChangeError> {
         use UserChangeError::*;
 
-        let mut postgres = postgres.lock().await;
-        let transaction = postgres.transaction().await.map_err(|_| DbError)?;
-
         let id = user.id;
+
+        let mut postgres = postgres.lock().await;
 
         let mut profile_data = vec![];
 
         if let Some(profile) = &change.profile {
             profile_data = image_base64::from_base64(profile.clone());
+
+            let statement = "select voxelphile.users.profile_id from voxelphile.users where voxelphile.users.id = $1;";
+            let params = [
+                &id.to_string() as &(dyn tokio_postgres::types::ToSql + Sync),
+            ];
+            
+            let Ok(row) = dbg!(postgres.query_one(statement, &params).await) else {
+                dbg!("yo");
+                Err(ServerError)?
+            };
+
+            if let Some(profile_id) = dbg!(row.try_get::<_, String>(0)).ok() {
+                let profile_path = format!("user/profile/{}.jpeg", profile_id.to_string());
+
+                Self::remove(&profile_path).await.map_err(|e| { dbg!(e); ServerError })?;
+            }
         }
 
-        if let Some(_) = &change.profile {
-            let _ = image::io::Reader::with_format(Cursor::new(profile_data.clone()), image::ImageFormat::Jpeg).decode().map_err(|_| BadProfile)?;
+        let transaction = postgres.transaction().await.map_err(|e| DbError)?;
 
-            let google_cloud_storage_oauth2_token = env::var("GOOGLE_CLOUD_OAUTH2_TOKEN").unwrap();
+        if let Some(_) = &change.profile {
+            let image = image::io::Reader::with_format(
+                Cursor::new(profile_data.clone()),
+                image::ImageFormat::Jpeg,
+            )
+            .decode()
+            .map_err(|_| BadProfile)?;
+
+            if image.width() > 120 || image.height() > 120 {
+                Err(BadProfile)?
+            }
 
             let profile_id = uuid::Uuid::new_v4();
-            
-            let client = reqwest::Client::new();
 
-            let url = format!("https://storage.googleapis.com/upload/storage/v1/b/{}/o?uploadType=media&name={}{}", "voxelphile-data", "user%2Fprofile%2F", profile_id.to_string());
+            let statement = "update voxelphile.users set profile_id = $1 where id = $2;";
 
-            client.post(&url)
-                .body(profile_data)
-                .header("Authorization", "Bearer ".to_owned() + &google_cloud_storage_oauth2_token)
-                .header("Content-Type", "image/jpeg")
-                .send()
-                .await.map_err(|_| ServerError)?;
+            let params = [
+                &profile_id.to_string() as &(dyn tokio_postgres::types::ToSql + Sync),
+                &id.to_string() as &(dyn tokio_postgres::types::ToSql + Sync),
+            ];
+            dbg!("yop");
+            dbg!(transaction
+                .execute(statement, &params)
+                .await)
+                .map_err(|e| { dbg!(e); DbError })?;
 
-            
-            let statement = "update xenotech.users set profile_id = '$1' where id = '$2';";
+            let profile_path = format!("user/profile/{}.jpeg", profile_id.to_string());
 
-            let params = [&profile_id.to_string() as &(dyn tokio_postgres::types::ToSql + Sync), &id.to_string() as &(dyn tokio_postgres::types::ToSql + Sync)];
-
-            transaction.execute(statement, &params).await.map_err(|_| 
-                    DbError
-            )?;
+            Self::upload_bytes(profile_data, &profile_path).await.map_err(|e| { dbg!(e);  ServerError })?;
         }
 
         let mut password_hash = None;
-        
+
         if let Some(password) = change.password.clone() {
             check_password(&password).then_some(()).ok_or(BadPassword)?;
 
@@ -386,13 +623,17 @@ impl Strategy for Mockup {
         }
 
         if let Some(password_hash) = &password_hash {
-            let statement = "update xenotech.user_password_logins set password = '$1' where id = '$2';";
+            let statement = "update voxelphile.user_password_logins set password = $1 where id = $2;";
 
-            let params = [&password_hash as &(dyn tokio_postgres::types::ToSql + Sync), &id.to_string() as &(dyn tokio_postgres::types::ToSql + Sync)];
+            let params = [
+                &password_hash as &(dyn tokio_postgres::types::ToSql + Sync),
+                &id.to_string() as &(dyn tokio_postgres::types::ToSql + Sync),
+            ];
 
-            transaction.execute(statement, &params).await.map_err(|_| 
-                    DbError
-            )?;
+            transaction
+                .execute(statement, &params)
+                .await
+                .map_err(|_| DbError)?;
         }
 
         let mut params = vec![];
@@ -405,34 +646,41 @@ impl Strategy for Mockup {
             updates.push("username".to_owned());
             prepared.push(format!("${}", updates.len()));
 
-            
             params.push(username as &(dyn tokio_postgres::types::ToSql + Sync));
         }
-        
+
         if let Some(email) = &change.email {
             check_email(email).then_some(()).ok_or(BadEmail)?;
-            
+
             updates.push("email".to_owned());
             prepared.push(format!("${}", updates.len()));
 
-            
             params.push(email as &(dyn tokio_postgres::types::ToSql + Sync));
         }
 
         if updates.len() > 0 {
             prepared.push(id.to_string());
 
-            let statement =
-            format!("update xenotech.users set ({}) = ({}) where id = '{}';", updates.concat(), prepared.concat(), format!("${}", prepared.len()));
- 
-            transaction.execute(&statement, &params).await.map_err(|e| {
-                if let Some(&SqlState::UNIQUE_VIOLATION) = e.code() {
-                    Duplicate
-                } else {
-                    DbError
-                }
-            })?;
+            let statement = format!(
+                "update voxelphile.users set ({}) = ({}) where id = {};",
+                updates.concat(),
+                prepared.concat(),
+                format!("${}", prepared.len())
+            );
+
+            transaction
+                .execute(&statement, &params)
+                .await
+                .map_err(|e| {
+                    if let Some(&SqlState::UNIQUE_VIOLATION) = e.code() {
+                        Duplicate
+                    } else {
+                        DbError
+                    }
+                })?;
         }
+
+        transaction.commit().await.map_err(|e| DbError)?;
 
         Ok(())
     }
