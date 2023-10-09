@@ -18,14 +18,12 @@ export const actions = {
             },
             body: JSON.stringify(json),
         });
-
-        console.log("yo");
-
         let response = await fetch_promise(request);
-       
 
-        console.log(await response.text());
+        let jwt = JSON.parse(await response.text());
         
-        return { success: true };
+        event.cookies.set("jwt", jwt, { path: '/' });
+        
+        return { };
 	}
 };

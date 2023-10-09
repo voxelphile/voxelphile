@@ -22,14 +22,12 @@ export const actions = {
             },
             body: JSON.stringify(json),
         });
+        let response = await fetch_promise(request);
 
-        let response;
-        try {
-            response = await fetch_promise(request);
-        } catch (err) {
-            throw error(503, "Service unavailable");
-        }
-        
-        return { success: true };
+        let jwt = JSON.parse(await response.text());
+
+        event.cookies.set("jwt", jwt, { path: '/' });
+
+        return { jwt };
 	}
 }; 

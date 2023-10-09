@@ -5,7 +5,7 @@
     import { get } from 'svelte/store';
 	import { profile_data } from "./store.js";
 	import { onMount } from "svelte";
-    
+
     /** @type {import('./$types').LayoutData} */
     export let data;
 </script>
@@ -34,6 +34,10 @@
             <a href="/dashboard" class = "link">Home</a>
             <br/>
             <a href="/dashboard/settings" class = "link">Settings</a>
+            <br/>
+            <form method = "POST" action="/user/logout">
+                <button class = "link">Logout</button>
+            </form>
         </div>
         <main id = "contents">
             <slot />
