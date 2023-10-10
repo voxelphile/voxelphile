@@ -17,7 +17,7 @@
                 <p>The plan is a monthly subscription for cosmetics</p>
                 <p>or an additional payment for chunk loaders.</p>
                 <p>Payment will be accessible through Stripe or Patreon (your choice).</p>
-                <p>Stand by until the platform is at a place where we can begin accepting payment!</p>
+                <p>Stand by until the platform is at a place where I can begin accepting payment!</p>
             
             </div>
             <div id = "user">
