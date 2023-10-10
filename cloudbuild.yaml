@@ -21,6 +21,6 @@ steps:
         --allow-unauthenticated
 timeout: 800s
 substitutions:
-  _SERVICE_NAME: backend
+  _SERVICE_NAME: frontend
 options:
   logging: GCS_ONLY
