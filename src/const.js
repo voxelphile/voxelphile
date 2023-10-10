@@ -1,1 +1,1 @@
-export const api = "http://127.0.0.1:26541";
+export const api = "https://api.voxelphile.com";
