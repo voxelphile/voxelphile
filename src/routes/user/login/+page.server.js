@@ -1,19 +1,17 @@
+import { error, fail } from "@sveltejs/kit";
+import { fetch_promise } from "../../../user-form.js";
 /** @type {import('./$types').Actions} */
-import {get_local_user_form_errors} from "../../../user-form.js"
+import { api } from "../../../const.js";
 export const actions = {
 	default: async (event) => {
 		const formData = await event.request.formData();
         const email = formData.get('email')?.toString();        
         const password = formData.get('password')?.toString();
 
-        let json = { password, details: { email } };
+        let json = { password, email };
 
-        const errors = get_local_user_form_errors(formData);
-        if(Object.keys(errors).length > 0) {
-            return errors;
-        }
 
-        const request = new Request("https://api.voxelphile.com/user/login", {
+        const request = new Request(api + "/user/login", {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json'
@@ -21,11 +19,22 @@ export const actions = {
             body: JSON.stringify(json),
         });
 
-        fetch(request)
-            .then((response) => {
-                console.log(response);
-            });
+        let response = await fetch(request).catch((response) => {
+            throw error(response?.status);
+        });
+
+        if (response?.status == 404) {
+            return { email_error: "Invalid" };
+        } else if (response?.status == 403) {
+            return { password_error: "Incorrect" };
+        } else if (response?.status != 200) {
+            throw error(response?.status);
+        }
+
+        let jwt = JSON.parse(await response?.text());
         
-        return { success: true };
+        event.cookies.set("jwt", jwt, { path: '/' });
+        
+        return { };
 	}
 };

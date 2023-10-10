@@ -1,5 +1,16 @@
 <script>
+	import { writable } from 'svelte/store';
+	import { disabled } from '../store.js';
+	import { onMount } from 'svelte';
     export let form;
+    
+    let email_empty = writable(true);
+    let password_empty = writable(true);
+
+    
+    onMount(() => {
+        disabled.set(false);
+    })
 </script>
 
 <div class = "input-group">
@@ -11,7 +22,7 @@
             <label class = "label-text red error"></label>
         {/if}
     </div>
-    <input id = "user" class = "input" name = "email"/>
+    <input class = "user input" type = "email" name = "email" on:input={(e) => {email_empty.set(e?.target?.value == '');}}/>
 </div>
 <div class = "input-group">
     <div class = "label">
@@ -22,7 +33,7 @@
             <label class = "label-text red error"></label>
         {/if}
     </div>
-    <input id = "user" class = "input" type = "password" name = "password"/>
+    <input class = "user input" type = "password" name = "password" on:input={(e) => {password_empty.set(e?.target?.value == '');}}/>
 </div>
-<button id = "submit" type = "submit" class = "white submit">Login</button>
+<button disabled = { $email_empty || $password_empty || $disabled } id = "submit" type = "submit" class = "white submit">Login</button>
 <a id = "submit" class = "black submit" href = "/user/register">Signup</a>
