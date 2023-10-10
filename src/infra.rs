@@ -443,7 +443,7 @@ impl Strategy for Mockup {
 
         let Ok(_) = password_hash.verify_password(&[&argon2::Argon2::default()], credentials.password.clone()) else {
             Err(BadPassword)?
-        };
+        };;
 
         let key: hmac::Hmac<sha2::Sha256> = hmac::Hmac::new_from_slice(
             &dbg!(env::var("VOXELPHILE_JWT_SECRET").unwrap()).as_bytes(),
