@@ -50,10 +50,7 @@ async fn root() -> Json<&'static str> {
 const AUTHORIZATION: &str = "Authorization";
 const BEARER: &str = "Bearer ";
 
-pub async fn jwt_authentification<B>(
-    mut request: Request<B>,
-    next: Next<B>,
-) -> impl IntoResponse {
+pub async fn jwt_authentification<B>(mut request: Request<B>, next: Next<B>) -> impl IntoResponse {
     let authorization_header = match request.headers().get(AUTHORIZATION) {
         Some(v) => v,
         None => return Err((StatusCode::UNAUTHORIZED, Json("Unauthorized"))),

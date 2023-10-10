@@ -8,7 +8,7 @@ use argon2::password_hash::{Salt, SaltString};
 use argon2::{Argon2, PasswordHasher};
 use async_trait::async_trait;
 use base64::Engine;
-use jsonwebtoken::{EncodingKey, Header, Algorithm, encode};
+use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
 use rustc_serialize::base64::FromBase64;
 use tokio_util::codec::{BytesCodec, FramedRead};
 // use common::log::{error, Log};
@@ -241,7 +241,7 @@ pub enum DbError {
 
 #[derive(Debug)]
 pub enum GoogleApiError {
-    ServerError
+    ServerError,
 }
 
 #[async_trait]
@@ -250,12 +250,15 @@ impl Strategy for Mockup {
         let (client, connection) = tokio_postgres::connect(
             &format!(
                 "host={} user=voxelphile password={}",
-                Self::get_db_ip().await.map_err(|_| DbError::CouldNotFetchIp)?,
+                Self::get_db_ip()
+                    .await
+                    .map_err(|_| DbError::CouldNotFetchIp)?,
                 env::var("VOXELPHILE_POSTGRES_PASSWORD").unwrap()
             ),
             tokio_postgres::NoTls,
         )
-        .await.map_err(|e| DbError::Postgres(e))?;
+        .await
+        .map_err(|e| DbError::Postgres(e))?;
 
         tokio::spawn(async move {
             if let Err(e) = connection.await {
@@ -296,16 +299,27 @@ impl Strategy for Mockup {
     async fn remove(path: &str) -> Result<(), ()> {
         let client = reqwest::Client::new();
         let path = path.clone().replace("/", "%2F");
-        dbg!(client
-            .delete(&format!("https://storage.googleapis.com/storage/v1/b/{}/o/{}", "voxelphile", path))
-            .bearer_auth(match Self::get_access_token().await {
-                Ok(x) => x,
-                Err(e) => { dbg!(e);  Err(())? },
-            })
-            .send()
-            .await)
-            .map(|_| ())
-            .map_err(|e| {dbg!(e); ()})
+        dbg!(
+            client
+                .delete(&format!(
+                    "https://storage.googleapis.com/storage/v1/b/{}/o/{}",
+                    "voxelphile", path
+                ))
+                .bearer_auth(match Self::get_access_token().await {
+                    Ok(x) => x,
+                    Err(e) => {
+                        dbg!(e);
+                        Err(())?
+                    }
+                })
+                .send()
+                .await
+        )
+        .map(|_| ())
+        .map_err(|e| {
+            dbg!(e);
+            ()
+        })
     }
 
     async fn upload_bytes(data: Vec<u8>, path: &str) -> Result<(), ()> {
@@ -324,16 +338,16 @@ impl Strategy for Mockup {
             .map(|_| ())
             .map_err(|e| {dbg!(e); ()})
     }
-    
+
     async fn get_access_token() -> Result<String, GoogleApiError> {
         use GoogleApiError::*;
 
         let client = reqwest::Client::new();
 
-        let iat =  SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_secs() as usize;
+        let iat = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as usize;
 
         let google_access_token_claims = GoogleAccessTokenClaims {
             iss: "voxelphile@voxelphile.iam.gserviceaccount.com".to_owned(),
@@ -343,25 +357,38 @@ impl Strategy for Mockup {
             iat,
         };
 
-        let encoding_key = EncodingKey::from_rsa_pem(&env::var("GOOGLE_API_CLIENT_SECRET").unwrap().as_bytes()).unwrap();
-        let token_string = encode(&Header::new(Algorithm::RS256), &google_access_token_claims, &encoding_key).unwrap();
-        
+        let encoding_key =
+            EncodingKey::from_rsa_pem(&env::var("GOOGLE_API_CLIENT_SECRET").unwrap().as_bytes())
+                .unwrap();
+        let token_string = encode(
+            &Header::new(Algorithm::RS256),
+            &google_access_token_claims,
+            &encoding_key,
+        )
+        .unwrap();
+
         let mut params = std::collections::HashMap::new();
         params.insert("grant_type", "urn:ietf:params:oauth:grant-type:jwt-bearer");
         params.insert("assertion", token_string.as_str());
 
-
-        let GoogleApiAccessTokenResp { access_token: google_api_access_token, .. } = client
+        let GoogleApiAccessTokenResp {
+            access_token: google_api_access_token,
+            ..
+        } = client
             .post("https://oauth2.googleapis.com/token")
             .header("Content-Type", "application/x-www-form-urlencoded")
             .form(&params)
             .send()
             .await
-            .map_err(|e| { dbg!(e); ServerError })?
-            .json::<GoogleApiAccessTokenResp>().await.map_err(|_| ServerError)?;
+            .map_err(|e| {
+                dbg!(e);
+                ServerError
+            })?
+            .json::<GoogleApiAccessTokenResp>()
+            .await
+            .map_err(|_| ServerError)?;
 
-
-       Ok(google_api_access_token)
+        Ok(google_api_access_token)
     }
 
     async fn get_user(postgres: &Postgres, user: User) -> Result<UserDetails, UserGetError> {
@@ -418,9 +445,10 @@ impl Strategy for Mockup {
             Err(BadPassword)?
         };
 
-        let key: hmac::Hmac<sha2::Sha256> =
-            hmac::Hmac::new_from_slice(&dbg!(env::var("VOXELPHILE_JWT_SECRET").unwrap()).as_bytes())
-                .unwrap();
+        let key: hmac::Hmac<sha2::Sha256> = hmac::Hmac::new_from_slice(
+            &dbg!(env::var("VOXELPHILE_JWT_SECRET").unwrap()).as_bytes(),
+        )
+        .unwrap();
 
         let exp = SystemTime::now()
             .checked_add(Duration::from_secs(86400))
@@ -564,16 +592,14 @@ impl Strategy for Mockup {
 
         dbg!("yo");
         if let Some(profile) = &change.profile {
-            let offset = profile.find(',').ok_or(BadProfile)?+1;
+            let offset = profile.find(',').ok_or(BadProfile)? + 1;
             let mut value = profile.clone();
             value.drain(..offset);
             profile_data = value.from_base64().map_err(|_| BadProfile)?;
 
             let statement = "select voxelphile.users.profile_id from voxelphile.users where voxelphile.users.id = $1;";
-            let params = [
-                &id.to_string() as &(dyn tokio_postgres::types::ToSql + Sync),
-            ];
-            
+            let params = [&id.to_string() as &(dyn tokio_postgres::types::ToSql + Sync)];
+
             let Ok(row) = dbg!(postgres.query_one(statement, &params).await) else {
                 dbg!("yo");
                 Err(ServerError)?
@@ -582,7 +608,10 @@ impl Strategy for Mockup {
             if let Some(profile_id) = dbg!(row.try_get::<_, String>(0)).ok() {
                 let profile_path = format!("user/profile/{}.jpeg", profile_id.to_string());
 
-                Self::remove(&profile_path).await.map_err(|e| { dbg!(e); ServerError })?;
+                Self::remove(&profile_path).await.map_err(|e| {
+                    dbg!(e);
+                    ServerError
+                })?;
             }
         }
 
@@ -610,14 +639,19 @@ impl Strategy for Mockup {
                 &id.to_string() as &(dyn tokio_postgres::types::ToSql + Sync),
             ];
             dbg!("yop");
-            dbg!(transaction
-                .execute(statement, &params)
-                .await)
-                .map_err(|e| { dbg!(e); DbError })?;
+            dbg!(transaction.execute(statement, &params).await).map_err(|e| {
+                dbg!(e);
+                DbError
+            })?;
 
             let profile_path = format!("user/profile/{}.jpeg", profile_id.to_string());
 
-            Self::upload_bytes(profile_data, &profile_path).await.map_err(|e| { dbg!(e);  ServerError })?;
+            Self::upload_bytes(profile_data, &profile_path)
+                .await
+                .map_err(|e| {
+                    dbg!(e);
+                    ServerError
+                })?;
         }
 
         let mut password_hash = None;
@@ -629,7 +663,8 @@ impl Strategy for Mockup {
         }
         dbg!("yo");
         if let Some(password_hash) = &password_hash {
-            let statement = "update voxelphile.user_password_logins set password = $1 where id = $2;";
+            let statement =
+                "update voxelphile.user_password_logins set password = $1 where id = $2;";
 
             let params = [
                 &password_hash as &(dyn tokio_postgres::types::ToSql + Sync),
@@ -655,7 +690,6 @@ impl Strategy for Mockup {
             updates.push("username".to_owned());
             params.push(username as &(dyn tokio_postgres::types::ToSql + Sync));
             prepared.push(format!("${}", params.len()));
-
         }
         dbg!("yo");
         if let Some(email) = &change.email {
@@ -664,11 +698,10 @@ impl Strategy for Mockup {
             updates.push("email".to_owned());
             params.push(email as &(dyn tokio_postgres::types::ToSql + Sync));
             prepared.push(format!("${}", params.len()));
-
         }
 
         let id_string = id.to_string();
-        
+
         dbg!("yo");
         if updates.len() > 0 {
             params.push(&id_string as &(dyn tokio_postgres::types::ToSql + Sync));
@@ -677,7 +710,11 @@ impl Strategy for Mockup {
             let mut sub_statements = vec![];
 
             for i in 0..updates.len() {
-                sub_statements.push(format!("{} = {}", updates.pop().unwrap(), prepared.pop().unwrap()));
+                sub_statements.push(format!(
+                    "{} = {}",
+                    updates.pop().unwrap(),
+                    prepared.pop().unwrap()
+                ));
             }
 
             let update_col_expr = sub_statements.join(", ");
@@ -690,16 +727,13 @@ impl Strategy for Mockup {
 
             dbg!(&statement);
 
-            dbg!(transaction
-                .execute(&statement, &params)
-                .await)
-                .map_err(|e| {
-                    if let Some(&SqlState::UNIQUE_VIOLATION) = e.code() {
-                        Duplicate
-                    } else {
-                        DbError
-                    }
-                })?;
+            dbg!(transaction.execute(&statement, &params).await).map_err(|e| {
+                if let Some(&SqlState::UNIQUE_VIOLATION) = e.code() {
+                    Duplicate
+                } else {
+                    DbError
+                }
+            })?;
         }
 
         transaction.commit().await.map_err(|e| DbError)?;
