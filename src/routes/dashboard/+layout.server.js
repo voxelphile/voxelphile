@@ -15,7 +15,13 @@ export async function load(event) {
         },
     });
     
-    let response = await fetch_promise(request);
+    let response = await fetch(request).catch((response) => {
+        throw error(response?.status);
+    });
+
+    if (response?.status != 200) {
+        throw error(response?.status);
+    }
 
     let json = await response.json();
 

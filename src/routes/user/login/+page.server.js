@@ -18,9 +18,20 @@ export const actions = {
             },
             body: JSON.stringify(json),
         });
-        let response = await fetch_promise(request);
 
-        let jwt = JSON.parse(await response.text());
+        let response = await fetch(request).catch((response) => {
+            throw error(response?.status);
+        });
+
+        if (response?.status == 404) {
+            return { email_error: "Invalid" };
+        } else if (response?.status == 403) {
+            return { password_error: "Incorrect" };
+        } else if (response?.status != 200) {
+            throw error(response?.status);
+        }
+
+        let jwt = JSON.parse(await response?.text());
         
         event.cookies.set("jwt", jwt, { path: '/' });
         
