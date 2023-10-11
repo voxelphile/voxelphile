@@ -9,7 +9,7 @@
     /** @type {import('./$types').PageData} */
 	export let data;
 
-    let needs_to_be_commmitted = writable(false);
+    let needs_to_be_committed = writable(false);
 
     async function load_profile(image_file) {
         return new Promise((resolve, reject) => {
@@ -73,11 +73,12 @@
         profile_file.click();
     };
     const enhance_form = (e) => {
-        if(!$needs_to_be_commmitted) {
+        console.log("yo "+needs_to_be_committed)
+        if(!$needs_to_be_committed) {
             return e.cancel();
         }
-
-        e.formData.set("profile", profile_data);
+        
+        e.formData.set("profile", $profile_data);
 
         return async ({ update }) => { 
             await update({ reset: false });
@@ -86,12 +87,12 @@
         };
     };
     function mark_submit_error() {
-        needs_to_be_commmitted.set(true);
+        needs_to_be_committed.set(true);
         document.getElementsByClassName('submit-error')[0].className = 'submit-error';
     }
     
     function hide_submit_error() {
-        needs_to_be_commmitted.set(false);
+        needs_to_be_committed.set(false);
         document.getElementsByClassName('submit-error')[0].className = 'submit-error submit-error-invisible';
     }
 </script>
@@ -156,6 +157,6 @@
         </div>
         <input class = "input user" type = "password" name = "repassword" on:input={(e) => mark_submit_error()}/>
     </div>
-    <button disabled = '{!$needs_to_be_commmitted}' id = "submit" class = "white submit">Commit</button>
+    <button disabled = '{!$needs_to_be_committed}' id = "submit" class = "white submit">Commit</button>
     <p class = "submit-error submit-error-invisible">You have changes that need to be committed.</p>
 </form>

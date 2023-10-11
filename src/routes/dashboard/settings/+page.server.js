@@ -50,7 +50,7 @@ export const actions = {
         }
         
         let json = { };
-
+        console.log(formData.get('profile'));
         if (formData.get('profile') != null && formData.get('profile')) {
             if (formData.get('profile') instanceof String) {
                 json['profile'] = formData.get('profile').toString();
