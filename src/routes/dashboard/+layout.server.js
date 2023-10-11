@@ -28,13 +28,11 @@ export async function load(event) {
 
     console.log(json);
 
-    if (json['profile'] == undefined) {
-        return {};
-    }
+    if (json['profile'] != undefined) {
+        json = { ...json,  profile_url: "https://storage.cloud.google.com/voxelphile/user/profile/" + json.profile + ".jpeg" };
     
-    json = { ...json,  profile_url: "https://storage.cloud.google.com/voxelphile/user/profile/" + json.profile + ".jpeg" };
-
-    delete json['profile'];
+        delete json['profile'];
+    }
     
     return json;
 }
