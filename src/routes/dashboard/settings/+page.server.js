@@ -50,9 +50,14 @@ export const actions = {
         }
         
         let json = { };
-        console.log(formData.get('profile'));
-        if (formData.get('profile') != null && formData.get('profile')) {
-            if (formData.get('profile') instanceof String) {
+        
+        if (formData.get('profile') != null) {
+            console.log("formdata yo");
+            var base64regex = /^([0-9a-zA-Z+/]{4})*(([0-9a-zA-Z+/]{2}==)|([0-9a-zA-Z+/]{3}=))?$/;
+            let encoding = "data:image/jpeg;base64,";
+            let data = formData.get('profile')?.toString();
+            let base64_data = data.slice(0).replace(encoding, "");
+            if (data.includes(encoding) && base64regex.test(base64_data)) {
                 json['profile'] = formData.get('profile').toString();
             }
         }
@@ -75,9 +80,6 @@ export const actions = {
             }
         }
 
-
-        console.log(json);
-
         const request = new Request(api + "/user/change", {
             method: 'POST',
             headers: {
@@ -94,9 +96,6 @@ export const actions = {
         if (response?.status != 200) {
             throw error(response?.status);
         }
-
-
-        console.log(response);
 
         return { success: true };
 	}

@@ -73,7 +73,6 @@
         profile_file.click();
     };
     const enhance_form = (e) => {
-        console.log("yo "+needs_to_be_committed)
         if(!$needs_to_be_committed) {
             return e.cancel();
         }

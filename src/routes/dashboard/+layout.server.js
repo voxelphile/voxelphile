@@ -26,8 +26,6 @@ export async function load(event) {
 
     let json = await response.json();
 
-    console.log(json);
-
     if (json['profile'] != undefined) {
         json = { ...json,  profile_url: "https://storage.cloud.google.com/voxelphile/user/profile/" + json.profile + ".jpeg" };
     
