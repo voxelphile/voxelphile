@@ -1,6 +1,7 @@
 
 import { error, fail, redirect } from "@sveltejs/kit";
 import { fetch_promise } from "../../user-form.js";
+import { api } from "../../const.js";
 
 /** @type {import('./$types').LayoutServerLoad} */
 export async function load(event) {

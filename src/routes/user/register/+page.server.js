@@ -53,8 +53,6 @@ export const actions = {
             }
         }
 
-        return errors;
-
         if (username == undefined || password == undefined || email == undefined) {
             return { success: false };
         }
