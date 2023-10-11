@@ -8,7 +8,7 @@ export async function load(event) {
         throw redirect(302, "/user/login");
     }
 
-	const request = new Request("http://127.0.0.1:26541/user", {
+	const request = new Request(api + "/user", {
         method: 'GET',
         headers: {
             'Authorization': 'Bearer ' + event.cookies.get("jwt")
