@@ -270,30 +270,7 @@ impl Strategy for Mockup {
     }
 
     async fn get_db_ip() -> Result<String, GoogleApiError> {
-        use GoogleApiError::*;
-
-        let project = "voxelphile";
-        let zone = "us-central1-a";
-        let instance = "postgres-1";
-
-        let client = reqwest::Client::new();
-
-        let GoogleCloudGetInstance { network_interfaces } = client.get(&format!("https://compute.googleapis.com/compute/v1/projects/{project}/zones/{zone}/instances/{instance}"))
-        .bearer_auth(match Self::get_access_token().await {
-            Ok(x) => x,
-            Err(e) => Err(ServerError)?
-        })
-        .header("Content-Type", "image/jpeg")
-        .send()
-        .await
-        .map_err(|e| {
-            ServerError
-        })?
-        .json::<GoogleCloudGetInstance>().await.map_err(|e| {
-            ServerError
-        })?;
-
-        Ok(network_interfaces[0].access_configs[0].nat_ip.clone())
+        Ok(env::var("VOXELPHILE_POSTGRES_HOST").unwrap())
     }
 
     async fn remove(path: &str) -> Result<(), ()> {
