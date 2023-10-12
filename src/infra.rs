@@ -249,10 +249,11 @@ impl Strategy for Mockup {
     async fn create_db_client_connection() -> Result<Postgres, DbError> {
         let (client, connection) = tokio_postgres::connect(
             &format!(
-                "host={} user=voxelphile password={}",
+                "host={} user=voxelphile port={} password={}",
                 Self::get_db_ip()
                     .await
                     .map_err(|_| DbError::CouldNotFetchIp)?,
+                env::var("VOXELPHILE_POSTGRES_PORT").unwrap(),
                 env::var("VOXELPHILE_POSTGRES_PASSWORD").unwrap()
             ),
             tokio_postgres::NoTls,
