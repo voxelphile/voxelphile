@@ -14,6 +14,9 @@
         </header>
         <div id = "user">
             <div class = "row">
+                <a  class = "white submit" style = "width: 100%" href = "/about">About</a>
+            </div>
+            <div class = "row">
                 <a  class = "white submit" style = "width: 100%" href = "/user/login">Login</a>
             </div>
             <div class = "row">
