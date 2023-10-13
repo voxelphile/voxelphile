@@ -26,11 +26,11 @@
                     <img src = "/about-2.png" draggable="false" on:dragstart={(e) => { e.preventDefault() }}/>
                     <img src = "/about-3.png" draggable="false" on:dragstart={(e) => { e.preventDefault() }}/>
                     <img src = "/about-4.png" draggable="false" on:dragstart={(e) => { e.preventDefault() }}/>
+                    <img src = "/about-6.png" draggable="false" on:dragstart={(e) => { e.preventDefault() }}/>
                     <div class = about-pictures-row>
                         <img src = "/about-5-1.png" draggable="false" on:dragstart={(e) => { e.preventDefault() }}/>
                         <img src = "/about-5-2.png" draggable="false" on:dragstart={(e) => { e.preventDefault() }}/>
                     </div>
-                    <img src = "/about-6.png" draggable="false" on:dragstart={(e) => { e.preventDefault() }}/>
                 </div>
             </div>
             <div id = "user">
