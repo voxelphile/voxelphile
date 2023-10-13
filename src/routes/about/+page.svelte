@@ -14,10 +14,11 @@
             <div class = "explanation">
                 <p>Voxelphile is a content creation and game development company empowering people to play, create, and socialize within a voxel environment; players are free to do as they please in a sandbox-like environment.</p>
                 <div class = "section">
-                    <p>I am currently working on Xenotech, a W3 Voxel MMO.</p>
+                    <p>I am currently working on Xenotech, a Web3 Voxel MMO.</p>
                     <p>Xenotech is a technology-focused space-based open world sandbox where the user discovers an alien technology.</p>
                     <p>The player then uses this technology to enhance their builds and creations, which allows them to discover more,</p>
                     <p>and so on and so forth...</p>
+                    <p>Players will be able to gather material that is not ephermeral, each item will have a unique identifier that can be verified via a public blockchain. This means you might find your favorite sword was once possessed by your favorite content creator (and the like!)</p>
                 </div>
                 <div class = "section about-pictures">
                     <p>Here is some of my voxel work thus far:</p>
