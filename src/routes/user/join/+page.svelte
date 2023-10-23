@@ -15,6 +15,9 @@
     })
 
 </script>
+<header>
+    <title>Join │ Voxelphile</title>
+</header>
 <div class = "input-group">
     <div class = "label">
         <label class = "label-text">Email</label>

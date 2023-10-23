@@ -2,7 +2,9 @@
     import "../app.postcss";
     import "./root.postcss";
 </script>
-
+<header>
+    <title>Voxelphile</title>
+</header>
 <div id = "container">
     <div id = "info-container">
         <header id = "header">
@@ -20,7 +22,7 @@
                 <a  class = "white submit" style = "width: 100%" href = "/user/login">Login</a>
             </div>
             <div class = "row">
-                <a class = "white submit" style = "width: 100%"  href = "/user/register" >Signup</a>
+                <a class = "white submit" style = "width: 100%"  href = "/user/join" >Join</a>
             </div>
             <div></div>
             <div class = "row">

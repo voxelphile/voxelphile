@@ -95,7 +95,9 @@
         document.getElementsByClassName('submit-error')[0].className = 'submit-error submit-error-invisible';
     }
 </script>
-
+<header>
+    <title>Settings │ Dashboard │ Voxelphile</title>
+</header>
 <form id = "form" method = "POST" enctype="multipart/form-data" use:enhance={enhance_form}>
     <div id = "upload-image">
         {#if $profile_data}

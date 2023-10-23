@@ -3,7 +3,9 @@
     import "../root.postcss";
     import "./voxelphile-plus.postcss";
 </script>
-
+<header>
+    <title>About │ Voxelphile</title>
+</header>
 <div id = "container">
     <div id = "info-container">
         <header id = "header" style="align-items: center;">

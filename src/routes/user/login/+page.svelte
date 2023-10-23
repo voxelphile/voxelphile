@@ -12,7 +12,9 @@
         disabled.set(false);
     })
 </script>
-
+<header>
+    <title>Login │ Voxelphile</title>
+</header>
 <div class = "input-group">
     <div class = "label">
         <label class = "label-text">Email</label>

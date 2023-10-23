@@ -33,7 +33,9 @@
         return message;
     }
 </script>
-
+<header>
+    <title>Error │ Voxelphile</title>
+</header>
 <div id = "container">
     <div id = "info-container">
         <header id = "header">
